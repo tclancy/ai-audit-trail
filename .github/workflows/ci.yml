@@ -17,10 +17,11 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install -r requirements-dev.txt
-      - run: ruff check .
-      - run: ruff format --check .
-      - run: mypy --strict packages apps tools/anchors-pull
-      - run: interrogate --fail-under 100 packages apps
+      # Same targets as `make check`, so CI and local runs cannot drift apart.
+      - run: make lint
+      - run: make types
+      - run: make docs
+      - run: pip install -e packages/audittrail-verify -e packages/audittrail-log -e packages/audittrail-testkit
       - run: lint-imports   # import-linter: audittrail_verify must not import audittrail
 
   schema-and-vectors:
@@ -100,19 +101,8 @@ jobs:
           python-version: "3.12"
       - run: pip install -r requirements-dev.txt
       - run: pip install -e packages/audittrail-verify -e packages/audittrail-log
-      - name: every mutation applies cleanly to HEAD (I15)
-        run: |
-          for d in mutations/*.diff; do
-            git apply --check "$d" || { echo "stale mutation $d"; exit 1; }
-          done
-      - name: every mutation turns the suite red
-        run: |
-          for d in mutations/*.diff; do
-            git stash -u -q || true
-            git apply "$d"
-            if pytest -q -x >/dev/null 2>&1; then echo "mutation did not fail the suite: $d"; exit 1; fi
-            git checkout -- . && git clean -fdq
-          done
+      # Checks each diff applies (I15) and turns the suite red; passes with no diffs (M0).
+      - run: make mutations
 
   secrets:
     runs-on: ubuntu-24.04
