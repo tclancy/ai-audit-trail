@@ -1,0 +1,14 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "audittrail-log"
+version = "0.0.0"
+description = "ai-audit-trail: log"
+requires-python = ">=3.12"
+license = "Apache-2.0"
+dependencies = ["audittrail-verify==0.0.0", "cryptography>=43,<44"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/audittrail"]

@@ -1,0 +1,76 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/tclancy/ai-audit-trail/spec/record.schema.json",
+  "title": "ai-audit-trail record, schema v1",
+  "description": "One log line. The on-disk line must equal RFC 8785 (JCS) serialization of this object byte for byte; this schema checks shape only. See SPEC.md section 3.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "v", "log_id", "type", "seq", "boot", "ts", "mono", "request_id", "actor", "app",
+    "template_hash", "model_id", "policy_hash", "input_ref", "cart_hash", "oracle",
+    "oracle_ref", "decision", "reason", "reason_v", "since_hb", "canary", "kid", "prev", "sig"
+  ],
+  "properties": {
+    "v":             { "const": 1 },
+    "log_id":        { "type": "string", "pattern": "^[a-z0-9-]{1,32}$" },
+    "type":          { "enum": ["boot", "decision", "heartbeat", "anchor", "rotation"] },
+    "seq":           { "$ref": "#/$defs/int53" },
+    "boot":          { "$ref": "#/$defs/ulid" },
+    "ts":            { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$" },
+    "mono":          { "$ref": "#/$defs/int53" },
+    "request_id":    { "$ref": "#/$defs/ulid" },
+    "actor":         { "type": "string", "pattern": "^spiffe://[a-z0-9.-]{1,64}/[a-z0-9/_.-]{1,128}$" },
+    "app":           { "type": "string", "pattern": "^[a-z0-9-]{1,32}$" },
+    "template_hash": { "$ref": "#/$defs/sha256" },
+    "model_id":      { "type": "string", "pattern": "^[A-Za-z0-9._:-]{1,64}$" },
+    "policy_hash":   { "$ref": "#/$defs/sha256" },
+    "input_ref":     { "$ref": "#/$defs/sha256" },
+    "cart_hash":     { "$ref": "#/$defs/sha256" },
+    "oracle":        { "enum": ["match", "mismatch", "unavailable", "timeout", "not_consulted"] },
+    "oracle_ref":    { "$ref": "#/$defs/sha256" },
+    "decision":      { "enum": ["approve", "reject"] },
+    "reason":        { "type": "string", "pattern": "^R_[A-Z0-9_]{1,40}$" },
+    "reason_v":      { "$ref": "#/$defs/int53" },
+    "since_hb":      { "$ref": "#/$defs/int53" },
+    "canary":        { "enum": ["pass", "fail", "not_run"] },
+    "kid":           { "type": "string", "pattern": "^[a-z0-9-]{1,32}$" },
+    "prev":          { "$ref": "#/$defs/sha256" },
+    "sig":           { "type": "string", "pattern": "^ed25519:[A-Za-z0-9+/]{86}==$" }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "type": { "const": "decision" } } },
+      "then": {}
+    },
+    {
+      "if": { "properties": { "type": { "enum": ["boot", "heartbeat", "anchor", "rotation"] } } },
+      "then": { "properties": { "decision": { "const": "reject" }, "oracle": { "const": "not_consulted" } } }
+    },
+    {
+      "if": { "properties": { "type": { "const": "heartbeat" } } },
+      "then": { "properties": { "reason": { "const": "R_HEARTBEAT" } } }
+    },
+    {
+      "if": { "properties": { "type": { "const": "anchor" } } },
+      "then": { "properties": { "reason": { "const": "R_ANCHOR" } } }
+    },
+    {
+      "if": { "properties": { "type": { "const": "rotation" } } },
+      "then": { "properties": { "reason": { "const": "R_KEY_ROTATION" } } }
+    },
+    {
+      "if": { "properties": { "type": { "const": "boot" } } },
+      "then": { "properties": { "reason": { "enum": ["R_BOOT", "R_BOOT_TRUNCATED"] } } }
+    },
+    {
+      "if": { "properties": { "seq": { "const": 0 } } },
+      "then": { "properties": { "prev": { "const": "sha256:0000000000000000000000000000000000000000000000000000000000000000" }, "type": { "const": "boot" } } },
+      "else": { "properties": { "prev": { "not": { "const": "sha256:0000000000000000000000000000000000000000000000000000000000000000" } } } }
+    }
+  ],
+  "$defs": {
+    "int53":  { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+    "sha256": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "ulid":   { "type": "string", "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$" }
+  }
+}

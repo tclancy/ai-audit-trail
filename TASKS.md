@@ -1,0 +1,35 @@
+# TASKS — current milestone and the queue
+
+Agents: take the first unchecked item in the **current** milestone. One PR per item. Do not start the next milestone until every item in the current one is checked and the milestone's "done when" in `PLAN.md` holds.
+
+Humans: keep this file honest. Check items only when merged.
+
+## Current milestone: M0 — Contract and spine
+
+- [x] Repository created, Apache-2.0, cloned. (human)
+- [x] Scaffold: layout, `CLAUDE.md`, `TASKS.md`, `SPEC.md`, `PLAN.md`, package skeletons, CI skeleton, `spec/record.schema.json`, `spec/reasons.txt`, `spec/keyring.example.json`. (scaffold commit)
+- [ ] **Lawyer hour on the contractor IP clause. Repository stays private until this is done.** (human — blocks "public", not blocks work)
+- [ ] `tools/vectors-go`: Go program that generates every positive and negative vector in SPEC §11 from the published test seed in `spec/test-seed.txt`, writes them under `spec/vectors/`, and writes `spec/vectors.sha256`. Uses a JCS library and `crypto/ed25519`; no other dependencies. Include a `README.md` stating that this tool is the reference for canonical bytes and is not the code under test.
+- [ ] CI: `vectors` job — regenerate with `tools/vectors-go` and fail if output differs from committed vectors; `manifest` job — `sha256sum -c spec/vectors.sha256`.
+- [ ] CI: `schema` job — a JSON-Schema-only checker (no project code) validates every positive vector and rejects every negative vector with the expected check number recorded in each negative vector's sidecar `.expect` file.
+- [ ] CI: lint (`ruff`), types (`mypy --strict`), docstrings (`interrogate --fail-under 100`), `import-linter` contract forbidding `audittrail` imports from `audittrail_verify`.
+- [ ] Pre-commit: `gitleaks` plus a hook that runs a **local, uncommitted** denylist file (`.denylist.local`, gitignored) over staged content, commit messages, and PR bodies.
+- [ ] `README.md`: isolation statement (SPEC §9.4) and "what this does not do" above the fold; one-paragraph description; no feature list. Already drafted; agent reviews against SPEC §1.3 and §9.4 and fixes drift.
+- [ ] `SECURITY.md`: disclosure address, response commitment, supported versions, and the wire-format versioning promise (schema `v` changes only on a major release; old records verify forever).
+- [ ] M0 done check: CI green; every positive vector validates; every negative vector rejected with its check number; manifest check passes.
+
+## Next: M1 — Walking skeleton (see PLAN.md)
+
+- [ ] `audittrail.Record` with regex validators for every string field (I8), strict parser (duplicate keys, floats, non-ASCII, unknown fields all rejected), JCS serialization, round-trip check, `sha256` hashing, zero-hash genesis. Tests against `spec/vectors/`.
+- [ ] `Signer` protocol; `SoftwareSigner` gated on `AUDITTRAIL_DEV=1` (I12). Test: signs the published seed's vectors bit-identically.
+- [ ] `Log.record` with file lock, prev-from-disk, `fsync`, `boot` record at init; `LogUnavailable` on any failure (I2); refuse re-genesis.
+- [ ] `Receipt`; `Approved.from_wire` enforcing SPEC §6 rules 1–7 with an in-memory `SeenStore` (I1).
+- [ ] `audittrail_verify` CLI: checks 1–5, exit codes 0/2/3/4; tests read only `spec/`.
+- [ ] Domain separation test (I11); key-material grep test (I13).
+- [ ] 30-line `apps/gate-stub` and `apps/consumer-stub`; two-service `deploy/compose.yml`; `make skeleton`.
+- [ ] Mutation diffs for I1, I2, I3, I4 (chain), I8, I11, I12; CI mutation job; I15 apply-check.
+- [ ] M1 done check per PLAN.md.
+
+## Later milestones
+
+M2 verifier complete + heartbeats + rotation · M3 anchors (MinIO) + Vault signer · M4 reconciler + consumer action log · M5 test kit + compose demo · M6 Go stub + release · v0.2: typestate packages (`Untrusted → Candidate → Validated`) in Python, TypeScript, Rust, each proven against the `cart_hash` vectors. Details in `PLAN.md`.

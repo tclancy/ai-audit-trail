@@ -1,0 +1,125 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  lint-types-docs:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements-dev.txt
+      - run: ruff check .
+      - run: ruff format --check .
+      - run: mypy --strict packages apps tools/anchors-pull
+      - run: interrogate --fail-under 100 packages apps
+      - run: lint-imports   # import-linter: audittrail_verify must not import audittrail
+
+  schema-and-vectors:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install check-jsonschema==0.29.4
+      - name: manifest
+        run: cd spec && sha256sum -c vectors.sha256
+      - name: positive vectors validate
+        run: |
+          shopt -s nullglob
+          for f in spec/vectors/positive/*.json; do check-jsonschema --schemafile spec/record.schema.json "$f"; done
+      - name: negative vectors are rejected
+        run: |
+          shopt -s nullglob
+          for f in spec/vectors/negative/*.json; do
+            if check-jsonschema --schemafile spec/record.schema.json "$f" >/dev/null 2>&1; then
+              echo "negative vector validated but should not: $f"; exit 1
+            fi
+          done
+      # Note: schema-level rejection is necessary, not sufficient. Round-trip (check 1) and
+      # signature (check 5) rejections are exercised by audittrail_verify's own tests.
+
+  vectors-regenerate:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+      - name: regenerate and diff
+        run: |
+          cd tools/vectors-go && go run . --out ../../spec/vectors.regen
+          diff -r ../../spec/vectors ../../spec/vectors.regen
+
+  tests:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements-dev.txt
+      - run: pip install -e packages/audittrail-verify -e packages/audittrail-log -e packages/audittrail-testkit
+      - run: pytest -q --cov=audittrail --cov=audittrail_verify --cov-fail-under=90
+      - name: grep tests (bypass tokens, key material, text channels)
+        run: python tools/grep-tests.py
+
+  verifier-isolated:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install build && python -m build packages/audittrail-verify
+      - name: install wheel into a clean venv and test against spec/ only
+        run: |
+          python -m venv /tmp/v && . /tmp/v/bin/activate
+          pip install packages/audittrail-verify/dist/*.whl pytest
+          pytest -q packages/audittrail-verify/tests
+      - name: no audittrail import anywhere in the verifier
+        run: |
+          if grep -rnE '(from|import) audittrail(\.|\s|$)' packages/audittrail-verify/src; then
+            echo "verifier imports the writer"; exit 1; fi
+
+  mutations:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements-dev.txt
+      - run: pip install -e packages/audittrail-verify -e packages/audittrail-log
+      - name: every mutation applies cleanly to HEAD (I15)
+        run: |
+          for d in mutations/*.diff; do
+            git apply --check "$d" || { echo "stale mutation $d"; exit 1; }
+          done
+      - name: every mutation turns the suite red
+        run: |
+          for d in mutations/*.diff; do
+            git stash -u -q || true
+            git apply "$d"
+            if pytest -q -x >/dev/null 2>&1; then echo "mutation did not fail the suite: $d"; exit 1; fi
+            git checkout -- . && git clean -fdq
+          done
+
+  secrets:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

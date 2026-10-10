@@ -1,0 +1,17 @@
+# ai-audit-trail reason codes. ASCII. One code per line under a [v=N] header.
+# Adding a code: append under the current version. Removing or renaming: new version.
+[v=1]
+R_BOOT
+R_BOOT_TRUNCATED
+R_HEARTBEAT
+R_ANCHOR
+R_KEY_ROTATION
+R_ORACLE_MATCH
+R_ORACLE_MISMATCH
+R_ORACLE_UNAVAILABLE
+R_ORACLE_TIMEOUT
+R_POLICY_DENY
+R_PARSE
+R_CANARY_FAIL
+R_LOG_UNAVAILABLE
+R_ANCHOR_OVERDUE

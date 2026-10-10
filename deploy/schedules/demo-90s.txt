@@ -1,0 +1,7 @@
+# t_seconds  users  spawn_rate  oracle_mode  model_mode   expect
+0    20   10  ok       ok        approve_rate>=0.9
+30   40   20  timeout  ok        approve=0
+45   40   20  ok       ok        approve_rate>=0.9
+60   40   20  ok       garbage   approve=0;reject_reason=R_PARSE
+75   40   20  ok       ok        approve_rate>=0.9
+90   0    0   ok       ok        -

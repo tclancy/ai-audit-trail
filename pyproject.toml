@@ -1,0 +1,30 @@
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "D", "UP", "S"]
+ignore = ["D203", "D213"]
+
+[tool.ruff.lint.per-file-ignores]
+"**/tests/**" = ["S101", "D"]
+
+[tool.mypy]
+strict = true
+python_version = "3.12"
+
+[tool.pytest.ini_options]
+testpaths = ["packages", "apps"]
+
+[tool.interrogate]
+fail-under = 100
+ignore-init-method = true
+
+[tool.importlinter]
+root_packages = ["audittrail", "audittrail_verify", "audittrail_testkit"]
+
+[[tool.importlinter.contracts]]
+name = "verifier imports nothing from the writer"
+type = "forbidden"
+source_modules = ["audittrail_verify"]
+forbidden_modules = ["audittrail", "audittrail_testkit"]

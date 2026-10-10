@@ -1,0 +1,4 @@
+# PUBLISHED Ed25519 test seed (32 bytes, hex). NOT A SECRET. Used only to produce
+# spec/vectors so that any implementation can prove it signs bit-identically.
+# Never use this key for anything else. tools/grep-tests.py exempts spec/.
+0000000000000000000000000000000000000000000000000000000000000001
