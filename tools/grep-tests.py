@@ -2,6 +2,7 @@
 
 Deliberately dumb. These catch the Friday-afternoon edit, not the adversary.
 """
+
 from __future__ import annotations
 
 import re

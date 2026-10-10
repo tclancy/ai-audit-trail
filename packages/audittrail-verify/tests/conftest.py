@@ -1,4 +1,5 @@
 """Verifier tests read ONLY committed fixtures under spec/. Never import audittrail here."""
+
 from __future__ import annotations
 
 from pathlib import Path
