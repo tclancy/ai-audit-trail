@@ -4,19 +4,27 @@ Companion to `SPEC.md`. Sized for how the work actually happens: Tom directs, an
 
 ## 0. Ground rules
 
-### 0.1 IP — unconditional, and a gate, not a checklist
+### 0.1 IP — what the contract actually says, and the rules that follow
 
-- The repository is **private** until a lawyer has read the contractor agreement's IP clause. This is not conditional on Tom's own reading of it. One hour, before the first commit is made public. "Conceived during the engagement and related to the client's business" is the usual language, and a dated public repo does not help with that; it timestamps conception inside the engagement window.
-- Ask the firm for a written side-project carve-out (prior-inventions / excluded-works form). Most have one.
-- If the firm later consumes ai-audit-trail: any fix discovered at work is re-derived at home from a clean problem statement, never ported; no work-context PRs flow upstream.
+Reviewed 2026-10-10 against the author's actual engagement terms (a platform Service Order plus the platform's Builder terms). Findings, kept generic on purpose:
+
+- The assignment covers **Work Product** — what is produced in performing the billed services under the Service Order. There is no "conceived during the term" clause and no "related to the client's business" clause. Work done on the author's own time, hardware, and accounts, not for the engagement, is the author's.
+- The terms define Background Technology as IP developed *before* the agreement; this project is developed *during* it, so it falls in a definitional gap. It is the author's under general law, but the argument against that is contamination by use: any of it written on billed hours, on a client machine, or for the client's project. **Separation of time and hardware is the legal basis, not hygiene.**
+- The confidentiality clause forbids creating derivative works from the client's confidential information; the exception is independent development without use of or reference to it. Nothing in this repository may be derived from a client's systems. The PR template's leak question enforces that clause.
+- Using any open-source or Builder-owned technology in the engagement requires the platform's or client's **written approval**. That approval, when the time comes, is the document that records this project as the author's independent work. Until it exists, the project is not used at work, not even for testing.
+- The client's own source-code and open-source policies also apply to the author under the engagement terms; check them before the client consumes this project.
+
+Rules that follow:
+
 - Personal hardware, personal accounts, personal time, personal API keys. No exceptions.
 - **Leak channels, each closed by a mechanism:**
-  - The mock model's trace file is synthetic or recorded with Tom's personal API key. Never from the firm's calls.
-  - ai-audit-trail sessions run in a dedicated project with **no vault connector and no work project attached**. Davis/AltX phrasing leaks through the agent's context otherwise.
-  - A local-only denylist of work identifiers (system names, GP names, field names) wired into gitleaks/pre-commit, run over commit messages and PR bodies as well as code. The denylist itself is never committed.
-  - PR template has a required field: "Could any sentence here only have been written by someone who saw a work system?" — a workflow checks the field is filled.
-  - `reasons.txt` and the fault schedules are the two artifacts most likely to be transcribed from a work system. They are written from the spec, not from memory of a work system.
+  - The mock model's trace file is synthetic or recorded with the author's personal API key. Never from a client's calls.
+  - Development sessions run in a dedicated project with **no notes vault and no client-context project attached**. Employer system names and phrasing leak through an agent's context otherwise.
+  - A local-only denylist of client identifiers (system names, counterparty names, field names) wired into gitleaks/pre-commit, run over commit messages and PR bodies as well as code. The denylist itself is never committed.
+  - PR template has a required field: "Could any sentence here only have been written by someone who saw a system outside this repository?" — a workflow checks the field is filled.
+  - `reasons.txt` and the fault schedules are the two artifacts most likely to be transcribed from a client system. They are written from the spec, not from memory of a client system.
   - Git author identity set per-repo to the personal address.
+- If a client later consumes this project: any fix discovered in that engagement is re-derived here from a clean problem statement, never ported; no client-context PRs flow upstream.
 - Apache-2.0 from the first commit. `LICENSE`, `NOTICE`, SPDX headers on every source file.
 
 ### 0.2 Engineering rules
@@ -65,11 +73,11 @@ M6: Go lint/test; conformance job.
 
 ### M0 — Contract and spine (2 units)
 
-- Repo (private), license, layout, CI skeleton, pre-commit with gitleaks + local denylist.
+- Repo (public is fine; see §0.1), license, layout, CI skeleton, pre-commit with gitleaks + local denylist.
 - `spec/record.schema.json`, `reasons.txt`, `keyring.example.json`.
 - **`tools/vectors-go`**: ~100 lines of Go (JCS library + `crypto/ed25519`) that generates every positive and negative vector in SPEC §11 from the published test seed. Committed output plus `vectors.sha256`; CI fails if a vector changes without a spec version bump. This is the independent oracle for the Python, and the seed of the Go stub.
 - README with the isolation statement and "what this does not do." No feature list.
-- **Done when (machine-checkable):** CI green; schema validates every positive vector and rejects every negative vector with the expected check number (a tiny JSON-schema-only checker is enough here); manifest check passes. **Then the lawyer hour, then public.**
+- **Done when (machine-checkable):** CI green; schema validates every positive vector and rejects every negative vector with the expected check number (a tiny JSON-schema-only checker is enough here); manifest check passes.
 
 ### M1 — Walking skeleton (2 units)
 
@@ -151,7 +159,7 @@ Roughly 15–17 units on the milestone sums; call it 18–22 with the things tha
 
 | Risk | Signal | Response |
 |---|---|---|
-| IP clause broader than assumed | "related to the business" | Already a gate: repo stays private until the lawyer hour. |
+| Contamination by use | any commit from billed hours, a client machine, or for a client project | Separation is the legal basis; see §0.1. Written approval before any use in an engagement. |
 | Scope creep into the ref | "while we're here, policy…" | v0.2. Interface only. |
 | Verifier purity eroded by tooling | any `audittrail` import in `audittrail_verify`; a fixture built by `audittrail-log` | import-linter + isolated-venv job fail the build. |
 | Vectors become a snapshot of the Python | Python changes and the vectors "need updating" | Vectors come from the Go tool; a change requires a spec version bump; CI blocks otherwise. |
@@ -166,6 +174,6 @@ A thing is done when: its positive test exists and passes; its mutation diff exi
 
 ## 5. Review log (2026-10-10)
 
-Delivery review findings accepted: vectors generated independently in M0 (chicken-and-egg); verifier separation made mechanical (`audittrail_verify` root, lockfile, fixtures-only tests, isolated venv, import-linter, deliberate duplication of canonicalization); negative/chain vectors, published seed, keyring format, line-is-canonical; lawyer hour unconditional and repo private until then; six leak channels each closed by a mechanism; cloud items replaced by Vault + MinIO in compose, cosign/SBOM deferred (the reviewer's claim that KMS lacks Ed25519 was checked against AWS documentation and is wrong; KMS is deferred for the cloud-account reason only); perf target → benchmark with `--no-fsync` fixtures; every `docker compose up` failure mode listed by the reviewer addressed (`init` container, MinIO as the sink service, exit-code flags, verifier `depends_on`, named volumes, manifest-list digests, 90-second demo); walking skeleton by unit 4, WIP limit, adversarial tests instead of manual breaking; previously unowned items assigned (`build_index`, keyring, `DecisionFields`, heartbeat loop, rotation, `anchors-pull`, stub decision logic, CI items); mutation mechanism defined as committed diffs; judgment-call done criteria converted to machine checks; Go stub given its own milestone; `boot` field; `/deps` endpoint. Estimate raised to 18–22 units.
+Delivery review findings accepted: vectors generated independently in M0 (chicken-and-egg); verifier separation made mechanical (`audittrail_verify` root, lockfile, fixtures-only tests, isolated venv, import-linter, deliberate duplication of canonicalization); negative/chain vectors, published seed, keyring format, line-is-canonical; IP section rewritten after reading the actual engagement terms (no conception clause; separation-by-use and written-approval rules instead); six leak channels each closed by a mechanism; cloud items replaced by Vault + MinIO in compose, cosign/SBOM deferred (the reviewer's claim that KMS lacks Ed25519 was checked against AWS documentation and is wrong; KMS is deferred for the cloud-account reason only); perf target → benchmark with `--no-fsync` fixtures; every `docker compose up` failure mode listed by the reviewer addressed (`init` container, MinIO as the sink service, exit-code flags, verifier `depends_on`, named volumes, manifest-list digests, 90-second demo); walking skeleton by unit 4, WIP limit, adversarial tests instead of manual breaking; previously unowned items assigned (`build_index`, keyring, `DecisionFields`, heartbeat loop, rotation, `anchors-pull`, stub decision logic, CI items); mutation mechanism defined as committed diffs; judgment-call done criteria converted to machine checks; Go stub given its own milestone; `boot` field; `/deps` endpoint. Estimate raised to 18–22 units.
 
 Rejected: none outright. One modification: the reviewer suggested Node as an alternative vector generator; Go chosen because it becomes the second-language stub.
