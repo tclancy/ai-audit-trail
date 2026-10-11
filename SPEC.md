@@ -87,7 +87,7 @@ One JSON object per line. **Strict**: no unknown fields, no duplicate keys, no f
 
 Zero-hash is `sha256:` followed by 64 `0` characters.
 
-A record line nests at most **5** levels, counting the outer object as level 1. This is a resource bound, not a canonicality rule: a line nested deeper than 5 is rejected before it is parsed and reported under check 1 as not a record line; a line nested 5 or fewer levels is parsed, and any value that is an object or an array then fails check 2. Nothing in this specification or any conforming implementation raises the bound.
+A record line nests at most **5** levels, counting the outer object as level 1. This is a resource bound, not a canonicality rule: a line nested deeper than 5 is rejected before it is parsed and reported under check 1 as not a record line; a line nested 5 or fewer levels is parsed, and any value that is an object or an array then fails check 2. Nothing in this specification or any conforming implementation raises the bound. Depth is structural: each `{` or `[` outside a string literal opens a level and its `}` or `]` closes it; a string literal runs from a `"` to the next `"` not preceded by an odd number of `\`. Bytes inside a string literal never change the depth, so a canonical line whose string value contains brackets parses and fails check 2 on the field's regex. A line whose running count goes negative is not JSON and fails check 1 either way.
 
 ### 3.2 Canonical line and hashing
 
@@ -97,7 +97,7 @@ The on-disk line **is** the canonical bytes. Construction:
 2. `sig = Ed25519.sign(DOMAIN_RECORD || body)`.
 3. Insert `sig` and serialize the complete record with JCS. Call these bytes `line`. Append `\n`.
 
-The maximum length of a record line is derived from the field bounds in §3.1, not chosen by hand: the sum, over the 25 fields in key order, of the key's length plus 3 (quotes and colon) plus the value's maximum length (the longest string the field's regex or enum admits, plus 2 for its quotes; 16 digits for an integer field other than `v`, whose only value is `1`), plus 24 commas and 2 braces. For schema `v == 1` that is **1398 bytes**, without the trailing `\n`. A line longer than the maximum fails check 1 before it is parsed. Implementations compute the maximum from the same table they validate against and must obtain this number.
+The maximum length of a record line is derived from the field bounds in §3.1, not chosen by hand: the sum, over the 25 fields in key order, of the key's length plus 3 (quotes and colon) plus the value's maximum length (the longest string the field's regex or enum admits, plus 2 for its quotes; 16 digits for an integer field other than `v`, whose only value is `1`), plus 24 commas and 2 braces. No regex admits a character JCS escapes, so no conforming value is lengthened by escaping. For schema `v == 1` that is **1398 bytes**, without the trailing `\n`. A line longer than the maximum fails check 1 before it is parsed. Implementations compute the maximum from the same table they validate against and must obtain this number.
 
 Verification requires `line == JCS(parse(line))` byte for byte. Any difference, including whitespace, key order, number formatting, or escaping, is a verification failure, not something to normalize. This reduces every implementation's parser to a round-trip check and removes parser semantics from the trust path.
 
@@ -154,6 +154,8 @@ Sink receipt (JCS; the sink may sign under the anchor-receipt domain with its ow
 ```
 
 `proof` is reserved for an inclusion proof (Rekor, v0.2); empty string in v0.1. `sink_ts` is the only clock in the system the gate does not control, and the verifier uses it (§5, check 8).
+
+The §3.1 depth bound applies to every JCS object the verifier reads, including submissions, receipts and the keyring; the §3.2 length bound applies to record lines only.
 
 Sink object key: `<log_id>/<seq:016d>.json`. The sink **must** be configured so the gate's identity can create an object at a new key and can neither overwrite, delete, nor shorten retention. The verifier lists **all versions**; a second version at any key is a fork.
 
@@ -224,7 +226,7 @@ Input: ordered log files, keyring, reasons file, optional anchor directory (pull
 
 Checks, all mandatory when their inputs are present:
 
-1. Each line round-trips: `line == JCS(parse(line))`. Strict parse (no duplicate keys, no floats, ASCII only). Nesting depth greater than 5, or line length greater than the §3.2 maximum, fails this check before parsing; both are counted over the bytes, in front of the JSON parser, so that every implementation reports the same check regardless of its parser's own limits.
+1. Each line round-trips: `line == JCS(parse(line))`. Strict parse (no duplicate keys, no floats, ASCII only). Nesting depth greater than 5, or line length greater than the §3.2 maximum, fails this check before parsing; both are counted over the bytes, in front of the JSON parser, so that every implementation reports the same check regardless of its parser's own limits. The order among the byte-level pre-checks (ASCII, length, depth) is not specified; all three are check 1.
 2. Schema and regexes (§3.1); type-specific values (§3.4).
 3. `seq` starts at 0 in the first file and increases by exactly 1 across the file set.
 4. `prev` equals `sha256` of the previous line; zero-hash only at `seq 0`.
@@ -338,7 +340,7 @@ Out of scope: collusion of gate owner + sink owner + verifier-package owner; phy
 Produced by an implementation that is **not** the Python under test (a ~100-line Go tool using a JCS library and `crypto/ed25519`), committed with a SHA-256 manifest; CI fails if any vector changes without a spec version bump.
 
 - Positive: genesis `boot`, decisions (approve/reject), heartbeat, anchor, rotation across two keys, a rotation across two files; each with `line`, `hash`, and the signature produced from the **published test seed** (Ed25519 is deterministic, so a second implementation proves it signs bit-identically).
-- Negative: duplicate key, `1.0`, `1e3`, `-0`, int ≥ 2^53, extra field, missing field, unknown reason, non-ASCII, unpaired surrogate escape, BOM, CRLF, trailing space, unsorted keys, zero-hash `prev` at seq 3, wrong domain, retired `kid`, nested value (an object where an integer belongs, depth 2; check 2), nested too deep (depth 6; check 1), line too long (one byte over the §3.2 maximum; check 1); each with expected check number and exit code.
+- Negative: duplicate key, `1.0`, `1e3`, `-0`, int ≥ 2^53, extra field, missing field, unknown reason, non-ASCII, unpaired surrogate escape, BOM, CRLF, trailing space, unsorted keys, zero-hash `prev` at seq 3, wrong domain, retired `kid`, nested value (a JCS-canonical, correctly signed line with an object where an integer belongs, depth 2; check 2), brackets in string (a JCS-canonical, correctly signed line whose `model_id` is `{{{{{{`; check 2, by the regex), nested too deep (a JCS-canonical line of depth 6, that is a value five containers deep, within the length bound; check 1), line too long (a JCS-canonical line one byte over the §3.2 maximum, depth 1; check 1); each with expected check number and exit code.
 - Anchor submission and sink receipt under their domains.
 - A keyring file and a reasons file.
 - `spec/` is exempt from the I13 private-key grep, explicitly.
@@ -374,7 +376,7 @@ Three gaps surfaced by generating the §11 vectors, all resolved in favour of wh
 
 ## 14b. Post-debate clarifications (2026-10-11)
 
-Nesting depth and line length were silent in §3 and §5; the round-two adversarial review of the `Record` implementation showed two conforming parsers disagreeing on the check number in a window set by their own depth limits, which move between interpreter releases. Settled after a three-advocate debate and a judge (issue #11): depth bound 5 on record lines and on v0.2 Candidates, a derived line length, both counted over bytes before parsing. The number is a human-readability bound, not a parser default: this data moves to and from a model and must stay glanceable by a human. The three negative vectors named in §11 are added by the vector tool in the implementation change that follows, with the version bump that requires.
+Nesting depth and line length were silent in §3 and §5; the round-two adversarial review of the `Record` implementation showed two conforming parsers disagreeing on the check number in a window set by their own depth limits, which move between interpreter releases. Settled after a three-advocate debate and a judge (issue #11): depth bound 5 on record lines and on v0.2 Candidates, a derived line length, both counted over bytes before parsing. The number is a human-readability bound, not a parser default: this data moves to and from a model and must stay glanceable by a human. The four negative vectors named in §11 are added by the vector tool in the implementation change that follows, with the version bump that requires. Clarified the same day after review of the wording: depth is structural (brackets inside string literals do not count), the check-1 vectors are canonical lines so the bounds themselves are what they exercise, and the depth bound applies to every JCS object the verifier reads.
 
 ## 15. Sources
 
