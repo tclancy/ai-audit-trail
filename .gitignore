@@ -8,3 +8,4 @@ runs/
 *.sqlite
 deploy/.keys/
 _to_delete/
+**/__pycache__/
