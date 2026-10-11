@@ -1,0 +1,335 @@
+# SPDX-License-Identifier: Apache-2.0
+"""The append-only log writer: genesis or boot at init, then `record()` (SPEC §3.6, §4).
+
+Every write takes a file lock, reads the last complete line from disk, checks it is the head
+this writer last saw, builds and signs the next record, writes the whole line in one call and
+`fsync`s it. Any failure at any step is `LogUnavailable`; nothing is written partially on
+purpose, and nothing is ever rewritten. Not here yet: heartbeats, anchors, key rotation,
+file rotation, the torn-line discard, and the boot self-check through the verifier (M2, M3).
+"""
+
+from __future__ import annotations
+
+import base64
+import dataclasses
+import fcntl
+import hashlib
+import os
+import threading
+import time
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any, NoReturn
+
+from audittrail.record import (
+    MAX_LINE_BYTES,
+    ZERO_HASH,
+    Record,
+    RecordError,
+    SchemaError,
+    canonical_bytes,
+    validate_string_field,
+)
+from audittrail.signing import DOMAIN_RECORD, Signer, SigningError
+
+REASON_V = 1
+"""The `spec/reasons.txt` section every record written by this version names."""
+
+BOOT_CONFIG_TEMPLATE = (
+    "heartbeat_s={heartbeat_s};anchor_max_s={anchor_max_s};"
+    "anchor_every={anchor_every};truncated_bytes={truncated_bytes}"
+)
+"""SPEC §3.4: the ASCII string whose sha256 a boot record carries in `oracle_ref`."""
+
+_CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+
+
+class LogUnavailable(Exception):
+    """The log could not be read, extended, or trusted. The caller rejects; nothing was written."""
+
+
+@dataclasses.dataclass(frozen=True, slots=True, kw_only=True)
+class DecisionFields:
+    """What a gate supplies for one decision; every value is rule-checked at construction (I8).
+
+    The log fills in everything else (`seq`, `prev`, clocks, ids, `kid`, `sig`). This holds no
+    free text and no content: hashes and enum values only.
+    """
+
+    actor: str
+    app: str
+    template_hash: str
+    model_id: str
+    policy_hash: str
+    input_ref: str
+    cart_hash: str
+    oracle: str
+    oracle_ref: str
+    decision: str
+    reason: str
+    canary: str
+
+    def __post_init__(self) -> None:
+        """Check every field against its SPEC §3.1 rule. Does not check the reasons file."""
+        for f in dataclasses.fields(self):
+            validate_string_field(f.name, getattr(self, f.name))
+
+
+class Receipt:
+    """The bytes of one written decision line and its parsed record. Final; not copyable.
+
+    Proves that this writer signed and wrote the line. Does not prove inclusion to anyone
+    else; that is reconciliation's job (SPEC §6 rule 8). `verify` arrives with `Approved`.
+    """
+
+    __slots__ = ("entry", "line")
+
+    def __init__(self, line: bytes, entry: Record) -> None:
+        """Hold a line the log just wrote. Not for arbitrary bytes; `Log` is the only caller."""
+        self.line = line
+        self.entry = entry
+
+    def __init_subclass__(cls, **kwargs: object) -> NoReturn:
+        """Refuse every subclass."""
+        raise TypeError("Receipt is final")
+
+    def __reduce__(self) -> NoReturn:
+        """Refuse the copy and persistence protocols; a receipt travels as its line."""
+        raise TypeError("Receipt cannot be copied or serialized; use .line")
+
+
+class Log:
+    """One writer for one `log_id` in one directory (SPEC §4). Opening it writes a boot record."""
+
+    def __init__(
+        self,
+        directory: Path,
+        log_id: str,
+        signer: Signer,
+        *,
+        actor: str,
+        template_hash: str,
+        model_id: str,
+        policy_hash: str,
+        heartbeat_s: int = 60,
+        anchor_every: int = 1000,
+        anchor_max_s: int = 900,
+    ) -> None:
+        """Validate the identity values, read the head from disk, and write the boot record.
+
+        Genesis happens only when no log file exists for `log_id`. An existing file whose last
+        line is not a complete, valid record is refused. Does not verify the chain behind the
+        head and does not read the anchor sink; those checks are the verifier's.
+        """
+        for name, value in (
+            ("log_id", log_id),
+            ("actor", actor),
+            ("template_hash", template_hash),
+            ("model_id", model_id),
+            ("policy_hash", policy_hash),
+        ):
+            validate_string_field(name, value)
+        for int_name, int_value in (
+            ("heartbeat_s", heartbeat_s),
+            ("anchor_every", anchor_every),
+            ("anchor_max_s", anchor_max_s),
+        ):
+            if type(int_value) is not int or int_value <= 0:
+                raise SchemaError(f"{int_name}: not a positive integer")
+        self._dir = Path(directory)
+        self._path = self._dir / f"{log_id}.{0:016d}.jsonl"
+        self._log_id = log_id
+        self._signer = signer
+        self._actor = actor
+        self._template_hash = template_hash
+        self._model_id = model_id
+        self._policy_hash = policy_hash
+        config = BOOT_CONFIG_TEMPLATE.format(
+            heartbeat_s=heartbeat_s,
+            anchor_max_s=anchor_max_s,
+            anchor_every=anchor_every,
+            truncated_bytes=0,
+        )
+        self._boot_config_hash = _sha256_of(config.encode("ascii"))
+        self._lock = threading.Lock()
+        self._mono_base = time.monotonic_ns()
+        self._boot = _ulid()
+        self._head: Record | None = None
+        self._head_hash = ZERO_HASH
+        self._write_boot()
+
+    def record(self, fields: DecisionFields) -> Receipt:
+        """Append one decision record and return its receipt. The only write path for decisions.
+
+        Raises `LogUnavailable` on any failure, including a head on disk that is not the one
+        this writer last wrote. Does not retry and does not return anything partial.
+        """
+        if type(fields) is not DecisionFields:
+            raise SchemaError("fields: not a DecisionFields")
+        return self._append("decision", dataclasses.asdict(fields))
+
+    def _write_boot(self) -> None:
+        """Create the file with a genesis boot, or append a boot naming the current head."""
+        with self._lock:
+            try:
+                head = _read_head(self._path)
+            except (OSError, RecordError) as e:
+                raise LogUnavailable(f"cannot read the log head: {e}") from e
+            if head is None:
+                line = self._signed_line("boot", self._boot_fields(), seq=0, prev=ZERO_HASH)
+                _create_with_line(self._path, line)
+                self._head, self._head_hash = Record.from_line(line), _sha256_of(line)
+                return
+            self._head, self._head_hash = head
+        self._append("boot", self._boot_fields())
+
+    def _boot_fields(self) -> dict[str, Any]:
+        """SPEC §3.4 values of a boot record. `cart_hash` is filled from `prev` at write time."""
+        return {
+            "actor": self._actor,
+            "app": "gate",
+            "template_hash": self._template_hash,
+            "model_id": self._model_id,
+            "policy_hash": self._policy_hash,
+            "input_ref": ZERO_HASH,
+            "cart_hash": ZERO_HASH,
+            "oracle": "not_consulted",
+            "oracle_ref": self._boot_config_hash,
+            "decision": "reject",
+            "reason": "R_BOOT",
+            "canary": "not_run",
+        }
+
+    def _append(self, record_type: str, specific: dict[str, Any]) -> Receipt:
+        """Lock, re-read the head from disk, build, sign, write one line, fsync. Never partial."""
+        with self._lock:
+            try:
+                fd = os.open(self._path, os.O_RDWR | os.O_APPEND)
+            except OSError as e:
+                raise LogUnavailable(f"cannot open the log: {e}") from e
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX)
+                head = self._require_disk_head_matches(fd)
+                if record_type == "boot":
+                    specific = {**specific, "cart_hash": self._head_hash}
+                line = self._signed_line(
+                    record_type, specific, seq=head.seq + 1, prev=self._head_hash
+                )
+                _write_line(fd, line)
+            except (OSError, RecordError, SigningError) as e:
+                raise LogUnavailable(f"cannot append to the log: {e}") from e
+            finally:
+                os.close(fd)
+            entry = Record.from_line(line)
+            self._head, self._head_hash = entry, _sha256_of(line)
+            return Receipt(line, entry)
+
+    def _require_disk_head_matches(self, fd: int) -> Record:
+        """Return the head record on disk; raise unless it is the one this writer last wrote."""
+        head = _read_head_fd(fd)
+        if head is None or head[1] != self._head_hash:
+            raise LogUnavailable("the log head on disk is not the one this writer last wrote")
+        return head[0]
+
+    def _signed_line(
+        self, record_type: str, specific: dict[str, Any], *, seq: int, prev: str
+    ) -> bytes:
+        """Build the full field set, sign its body, and return the canonical line (SPEC §3.2)."""
+        ts = _ts_now()
+        if self._head is not None and ts < self._head.ts:
+            raise LogUnavailable("the wall clock went backwards")
+        fields: dict[str, Any] = {
+            "v": 1,
+            "log_id": self._log_id,
+            "type": record_type,
+            "seq": seq,
+            "boot": self._boot,
+            "ts": ts,
+            "mono": time.monotonic_ns() - self._mono_base,
+            "request_id": _ulid(),
+            "reason_v": REASON_V,
+            "since_hb": 0,
+            "kid": self._signer.kid,
+            "prev": prev,
+            **specific,
+        }
+        signature = self._signer.sign(DOMAIN_RECORD, canonical_bytes(fields))
+        fields["sig"] = "ed25519:" + base64.b64encode(signature).decode("ascii")
+        return Record(**fields).line()
+
+
+def _read_head(path: Path) -> tuple[Record, str] | None:
+    """Return the last line of the file as (record, hash), or None if the file does not exist.
+
+    An empty file, a file not ending in a newline, or a last line that is not a valid record
+    raises `RecordError` or `LogUnavailable`; this never guesses and never re-genesises.
+    """
+    try:
+        fd = os.open(path, os.O_RDONLY)
+    except FileNotFoundError:
+        return None
+    try:
+        return _read_head_fd(fd)
+    finally:
+        os.close(fd)
+
+
+def _read_head_fd(fd: int) -> tuple[Record, str] | None:
+    """Return the last complete line of an open file as (record, hash). Reads only the tail."""
+    size = os.fstat(fd).st_size
+    if size == 0:
+        raise LogUnavailable("the log file is empty; a log never re-genesises")
+    window = MAX_LINE_BYTES + 2
+    tail = os.pread(fd, window, max(0, size - window))
+    if not tail.endswith(b"\n"):
+        raise LogUnavailable("the last line is not newline-terminated")
+    line = tail[:-1].rsplit(b"\n", 1)[-1]
+    return Record.from_line(line), _sha256_of(line)
+
+
+def _create_with_line(path: Path, line: bytes) -> None:
+    """Create the file exclusively with one line, fsync it, then fsync the directory."""
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except OSError as e:
+        raise LogUnavailable(f"cannot create the log: {e}") from e
+    try:
+        _write_line(fd, line)
+    except OSError as e:
+        raise LogUnavailable(f"cannot write genesis: {e}") from e
+    finally:
+        os.close(fd)
+    try:
+        dir_fd = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(dir_fd)
+        finally:
+            os.close(dir_fd)
+    except OSError as e:
+        raise LogUnavailable(f"cannot fsync the log directory: {e}") from e
+
+
+def _write_line(fd: int, line: bytes) -> None:
+    """Write `line` plus newline in one call and fsync. A short write is an OSError."""
+    data = line + b"\n"
+    written = os.write(fd, data)
+    if written != len(data):
+        raise OSError(f"short write: {written} of {len(data)} bytes")
+    os.fsync(fd)
+
+
+def _sha256_of(data: bytes) -> str:
+    """`sha256:<hex>` of the bytes."""
+    return "sha256:" + hashlib.sha256(data).hexdigest()
+
+
+def _ts_now() -> str:
+    """Return the wall clock as SPEC §3.1 `ts`: UTC, millisecond precision, `Z`."""
+    now = datetime.now(UTC)
+    return now.strftime("%Y-%m-%dT%H:%M:%S.") + f"{now.microsecond // 1000:03d}Z"
+
+
+def _ulid() -> str:
+    """Return a ULID: 48-bit millisecond timestamp, 80 random bits, Crockford base32."""
+    value = (time.time_ns() // 1_000_000) << 80 | int.from_bytes(os.urandom(10), "big")
+    return "".join(_CROCKFORD[(value >> (5 * i)) & 31] for i in range(25, -1, -1))

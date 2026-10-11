@@ -1,5 +1,6 @@
 """ai-audit-trail: log. See SPEC.md. Exposes `Record`, the signing protocol, and their errors."""
 
+from audittrail.log import DecisionFields, Log, LogUnavailable, Receipt
 from audittrail.record import (
     MAX_LINE_BYTES,
     MAX_NESTING_DEPTH,
@@ -24,10 +25,14 @@ __all__ = [
     "DOMAIN_ANCHOR",
     "DOMAIN_ANCHOR_RECEIPT",
     "DOMAIN_RECORD",
+    "DecisionFields",
+    "Log",
+    "LogUnavailable",
     "MAX_LINE_BYTES",
     "MAX_NESTING_DEPTH",
     "ChainError",
     "ParseError",
+    "Receipt",
     "Record",
     "RecordError",
     "SchemaError",
