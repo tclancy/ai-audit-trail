@@ -240,15 +240,24 @@ MAX_LINE_BYTES = _max_line_bytes()
 """SPEC §3.2: a line longer than this, without its newline, is check 1 before parsing."""
 
 
+def validate_string_field(name: str, value: object) -> None:
+    """Raise `SchemaError` unless `value` is a `str` matching STRING_RULES[name] exactly.
+
+    `name` must be a STRING_RULES key; anything else is a `KeyError`, a programming error.
+    Does not check integer fields and never returns a cleaned-up value.
+    """
+    rule = STRING_RULES[name]
+    if type(value) is not str:
+        raise SchemaError(f"{name}: not a string")
+    ok = value in rule if isinstance(rule, frozenset) else rule.fullmatch(value) is not None
+    if not ok:
+        raise SchemaError(f"{name}: value does not match its rule")
+
+
 def _validate_strings(record: Record) -> None:
     """Every entry in STRING_RULES must match its value exactly. Does not check ints."""
-    for name, rule in STRING_RULES.items():
-        value = getattr(record, name)
-        if type(value) is not str:
-            raise SchemaError(f"{name}: not a string")
-        ok = value in rule if isinstance(rule, frozenset) else rule.fullmatch(value) is not None
-        if not ok:
-            raise SchemaError(f"{name}: value does not match its rule")
+    for name in STRING_RULES:
+        validate_string_field(name, getattr(record, name))
 
 
 def _validate_integers(record: Record) -> None:
