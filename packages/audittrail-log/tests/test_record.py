@@ -16,6 +16,10 @@ from typing import Any
 import pytest
 from audittrail.record import (
     INT_FIELDS,
+    MAX_INT_DIGITS,
+    MAX_LINE_BYTES,
+    MAX_NESTING_DEPTH,
+    MAX_STRING_LEN,
     STRING_RULES,
     ZERO_HASH,
     ChainError,
@@ -24,6 +28,7 @@ from audittrail.record import (
     RecordError,
     SchemaError,
     canonical_bytes,
+    nesting_depth,
 )
 
 
@@ -286,7 +291,7 @@ def genesis_line(vectors_dir: Path) -> bytes:
         ((b'"mono":0,', b'"mono":9007199254740992,'), 2),
         ((b'"mono":0,', b'"mono":-1,'), 2),
         ((b'"mono":0,', b'"mono":-0,'), 1),
-        ((b'"mono":0,', b'"mono":' + b"[" * 1000 + b"]" * 1000 + b","), 2),
+        ((b'"mono":0,', b'"mono":' + b"[" * 1000 + b"]" * 1000 + b","), 1),
         ((b'"mono":0,', b'"mono":' + b"[" * 100000 + b"]" * 100000 + b","), 1),
         ((b'"mono":0,', b'"mono":[[1]],'), 2),
         ((b'"mono":0,', b'"mono":{"a":{"b":1}},'), 2),
@@ -303,9 +308,8 @@ def test_hostile_lines_raise_only_record_errors_at_the_reference_check(
 ) -> None:
     """Each edit of the genesis line fails with a `RecordError` at the Go reference's check number.
 
-    `pytest.raises(RecordError)` fails on a bare `ValueError` or `RecursionError`. Nesting is
-    pinned at 1000 (both sides round-trip) and 100000 (both reject); between roughly 5000 and
-    10000 the two parsers' depth limits differ and neither side accepts the record.
+    `pytest.raises(RecordError)` fails on a bare `ValueError` or `RecursionError`. Nesting past
+    SPEC §3.1's bound is check 1 before parsing on both sides, whatever their parsers' limits.
     """
     line = genesis_line(vectors_dir).replace(*edit)
     assert line != genesis_line(vectors_dir)
@@ -434,3 +438,95 @@ def test_from_line_rejects_non_bytes_with_a_record_error() -> None:
     for not_bytes in ("{}", bytearray(b"{}"), memoryview(b"{}")):
         with pytest.raises(ParseError):
             Record.from_line(not_bytes)  # type: ignore[arg-type]
+
+
+# --- SPEC §3.1 depth bound and §3.2 line length (issue #11) ---------------------
+
+
+def test_spec_constants_are_the_stated_numbers() -> None:
+    """SPEC §3.1 says 5 and §3.2 says 1398 bytes for schema v == 1; the derivation must agree."""
+    assert MAX_NESTING_DEPTH == 5
+    assert MAX_LINE_BYTES == 1398
+    assert MAX_INT_DIGITS == 16
+
+
+def test_max_string_len_agrees_with_the_regex_engine() -> None:
+    """Every MAX_STRING_LEN entry is exactly the widest match its rule admits; none is unbounded."""
+    from re import _parser  # type: ignore[attr-defined]
+
+    assert set(MAX_STRING_LEN) == set(STRING_RULES)
+    for name, rule in STRING_RULES.items():
+        if isinstance(rule, frozenset):
+            assert MAX_STRING_LEN[name] == max(len(v) for v in rule), name
+        else:
+            _lo, hi = _parser.parse(rule.pattern).getwidth()
+            assert hi < _parser.MAXREPEAT, name
+            assert MAX_STRING_LEN[name] == hi, name
+
+
+def test_max_line_bytes_is_derived_not_typed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Widening one field's maximum by one byte moves the derived total by one byte."""
+    import audittrail.record as record
+
+    monkeypatch.setitem(record.MAX_STRING_LEN, "model_id", MAX_STRING_LEN["model_id"] + 1)
+    assert record._max_line_bytes() == MAX_LINE_BYTES + 1
+
+
+def test_line_too_long_vector_is_one_byte_over(vectors_dir: Path) -> None:
+    """The committed `line-too-long` vector is exactly MAX_LINE_BYTES + 1 bytes (SPEC §11)."""
+    [line] = log_lines(vectors_dir / "negative" / "line-too-long")
+    assert len(line) == MAX_LINE_BYTES + 1
+
+
+def test_longest_positive_vector_line_fits(vectors_dir: Path) -> None:
+    """The bound is not below any committed canonical line."""
+    longest = max(len(line) for v in vector_dirs(vectors_dir, "positive") for line in log_lines(v))
+    assert longest <= MAX_LINE_BYTES
+
+
+@pytest.mark.parametrize(
+    ("line", "depth"),
+    [
+        (b"{}", 1),
+        (b'{"a":1}', 1),
+        (b'{"a":[1]}', 2),
+        (b'{"a":[[[[1]]]]}', 5),
+        (b'{"a":[[[[[1]]]]]}', 6),
+        (b'{"a":"{{{{{{{{"}', 1),
+        (b'{"a":"[\\"[[[[[[["}', 1),
+        (b'{"a":"\\\\","b":[[[[[[1]]]]]]}', 7),
+        (b"", 0),
+    ],
+)
+def test_nesting_depth_counts_containers_outside_strings(line: bytes, depth: int) -> None:
+    """Brackets inside strings, including after escaped quotes and backslashes, are not nesting."""
+    assert nesting_depth(line) == depth
+
+
+def padded_genesis(vectors_dir: Path, total: int) -> bytes:
+    """The genesis line with an extra last field so the line is exactly `total` bytes."""
+    base = genesis_line(vectors_dir)
+    pad = total - len(base) - len(b',"zz":""')
+    assert pad >= 0
+    line = base[:-1] + b',"zz":"' + b"a" * pad + b'"}'
+    assert len(line) == total
+    return line
+
+
+def test_line_length_bound_is_check_one_at_one_byte_over(vectors_dir: Path) -> None:
+    """1398 bytes parses and fails the schema (check 2); 1399 bytes is check 1 before parsing."""
+    with pytest.raises(SchemaError):
+        Record.from_line(padded_genesis(vectors_dir, MAX_LINE_BYTES))
+    with pytest.raises(ParseError):
+        Record.from_line(padded_genesis(vectors_dir, MAX_LINE_BYTES + 1))
+
+
+def test_depth_bound_is_check_one_at_six_and_schema_at_five(vectors_dir: Path) -> None:
+    """Depth 5 (outer object plus four brackets) is check 2; depth 6 is check 1 before parsing."""
+    base = genesis_line(vectors_dir)
+    with pytest.raises(SchemaError):
+        Record.from_line(base.replace(b'"mono":0,', b'"mono":[[[[0]]]],'))
+    with pytest.raises(ParseError):
+        Record.from_line(base.replace(b'"mono":0,', b'"mono":[[[[[0]]]]],'))
+    with pytest.raises(SchemaError):
+        Record.from_line(base.replace(b'"model_id":"test-model-1"', b'"model_id":"[[[[[[[[["'))

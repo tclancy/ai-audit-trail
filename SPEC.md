@@ -1,4 +1,4 @@
-# ai-audit-trail — Specification v0.1 (revision 2, post-review)
+# ai-audit-trail — Specification v0.1 (revision 3, post-review)
 
 Repository: github.com/tclancy/ai-audit-trail. Python import roots: `audittrail`, `audittrail_verify`, `audittrail_testkit`.
 

@@ -21,6 +21,14 @@ var (
 
 const zeroHash = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
 
+// SPEC §3.1 and §3.2 byte-level bounds, checked before any parser runs.
+// maxLineBytes is stated in §3.2 and derived by the Python from its field
+// table; this tool only needs the number to build the line-too-long vector.
+const (
+	maxNestingDepth = 5
+	maxLineBytes    = 1398
+)
+
 // canonical returns the RFC 8785 bytes of obj. It panics on failure because
 // every input is a fixed value in this source; a failure is a bug here.
 func canonical(obj map[string]any) []byte {
