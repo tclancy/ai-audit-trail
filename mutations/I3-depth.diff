@@ -1,0 +1,13 @@
+diff --git a/packages/audittrail-log/src/audittrail/record.py b/packages/audittrail-log/src/audittrail/record.py
+index 61e5691..469e257 100644
+--- a/packages/audittrail-log/src/audittrail/record.py
++++ b/packages/audittrail-log/src/audittrail/record.py
+@@ -337,8 +337,6 @@ def _require_within_bounds(line: bytes) -> None:
+     """Raise `ParseError` if the line is over MAX_LINE_BYTES or nests past MAX_NESTING_DEPTH."""
+     if len(line) > MAX_LINE_BYTES:
+         raise ParseError("line is longer than any record can be")
+-    if nesting_depth(line) > MAX_NESTING_DEPTH:
+-        raise ParseError("line nests deeper than any record can")
+ 
+ 
+ def nesting_depth(line: bytes) -> int:
