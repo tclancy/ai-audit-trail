@@ -1,4 +1,7 @@
-# PUBLISHED Ed25519 test seed (32 bytes, hex). NOT A SECRET. Used only to produce
+# PUBLISHED Ed25519 test seeds (32 bytes, hex). NOT SECRETS. Used only to produce
 # spec/vectors so that any implementation can prove it signs bit-identically.
-# Never use this key for anything else. tools/grep-tests.py exempts spec/.
-0000000000000000000000000000000000000000000000000000000000000001
+# Never use these keys for anything else. tools/grep-tests.py exempts spec/.
+# Format: <seed hex> <kid> <role>   (tools/vectors-go reads the first three fields)
+0000000000000000000000000000000000000000000000000000000000000001 gate-test-1 gate  # gate key
+0000000000000000000000000000000000000000000000000000000000000002 gate-test-2 gate  # gate rotation target
+0000000000000000000000000000000000000000000000000000000000000003 sink-test-1 sink  # sink key

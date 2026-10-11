@@ -97,7 +97,7 @@ The on-disk line **is** the canonical bytes. Construction:
 
 Verification requires `line == JCS(parse(line))` byte for byte. Any difference, including whitespace, key order, number formatting, or escaping, is a verification failure, not something to normalize. This reduces every implementation's parser to a round-trip check and removes parser semantics from the trust path.
 
-`hash(record) = sha256(line)` — **including** `sig`. Ed25519 is deterministic, so there is exactly one valid line per (record contents, key). The chain and the anchors therefore commit to *who signed*, not just what was said.
+`hash(record) = sha256(line)` — over the line bytes **without** the trailing `\n`, and **including** `sig`. Ed25519 is deterministic, so there is exactly one valid line per (record contents, key). The chain and the anchors therefore commit to *who signed*, not just what was said.
 
 `prev` of record *n+1* is `hash(record n)`. NFC normalization is not used; non-ASCII is forbidden by the regexes, so there is nothing to normalize.
 
@@ -117,13 +117,13 @@ A signature under one domain never verifies under another (invariant I11).
 
 | `type` | `decision` | `oracle` | `reason` | `cart_hash` | `oracle_ref` | notes |
 |---|---|---|---|---|---|---|
-| `boot` | `reject` | `not_consulted` | `R_BOOT` or `R_BOOT_TRUNCATED` | hash of the last verified line at boot | sha256 of ASCII `heartbeat_s=<n>;anchor_max_s=<n>;anchor_every=<n>;truncated_bytes=<n>` | **only** record at which `boot` may change and `mono` may reset to 0 |
+| `boot` | `reject` | `not_consulted` | `R_BOOT` or `R_BOOT_TRUNCATED` | hash of the last verified line at boot; the zero-hash at genesis (`seq == 0`), where no line precedes it | sha256 of ASCII `heartbeat_s=<n>;anchor_max_s=<n>;anchor_every=<n>;truncated_bytes=<n>` | **only** record at which `boot` may change and `mono` may reset to 0 |
 | `decision` | as decided | as consulted | as decided | Candidate hash | compared value hash | the only type `Approved` accepts |
 | `heartbeat` | `reject` | `not_consulted` | `R_HEARTBEAT` | sha256(`audittrail-heartbeat`) | zero-hash | emitted from the request-serving loop, not a side thread; `since_hb` carries the count. Heartbeats are chain records so the head moves on the clock, not on traffic: a quiet night still produces distinct heads for each anchor, each anchor becomes a sink-timestamped proof that nothing else was written in that interval, and the verifier can tell "quiet" from "dead" or "redirected" |
 | `anchor` | `reject` | `not_consulted` | `R_ANCHOR` | the head hash submitted | sha256 of the sink's `AnchorReceipt` line | marks that a submission was made |
 | `rotation` | `reject` | `not_consulted` | `R_KEY_ROTATION` | sha256 of ASCII `new_kid=<kid>` | zero-hash | signed by the **old** key; the next record is signed by the new key |
 
-Every string field not listed above carries its normal value; `actor` on non-decision records is the gate's own identity.
+Every string field not listed above carries its normal value. On non-decision records (`boot`, `heartbeat`, `anchor`, `rotation`), `actor` is the gate's own identity and `app` is the literal `gate`.
 
 ### 3.5 Reasons file
 
@@ -216,7 +216,7 @@ Behavioral rules (each pinned in §7):
 
 ## 5. Verifier (`audittrail-verify`)
 
-Input: ordered log files, keyring, reasons file, optional anchor directory (pulled from the sink by a separate tool so the verifier has no cloud dependencies), optional consumer action logs. Output: JSON report; exit codes: `0` all checks ran and passed; `2` failure; `3` I/O or internal error (every exception is caught and mapped to 3); `4` passed but one or more checks were skipped or the prefix is unverified. **CI requires 0.**
+Input: ordered log files, keyring, reasons file, optional anchor directory (pulled from the sink by a separate tool so the verifier has no cloud dependencies), optional consumer action logs, and an optional `--now <RFC 3339 UTC>` that replaces the wall clock for the staleness check (7) and the anchor-cadence check (8). `--now` exists so a fixed-date conformance vector can be verified to exit 0; a production run never passes it, and a report records which clock was used. Output: JSON report; exit codes: `0` all checks ran and passed; `2` failure; `3` I/O or internal error (every exception is caught and mapped to 3); `4` passed but one or more checks were skipped or the prefix is unverified. **CI requires 0.**
 
 Checks, all mandatory when their inputs are present:
 
@@ -226,7 +226,7 @@ Checks, all mandatory when their inputs are present:
 4. `prev` equals `sha256` of the previous line; zero-hash only at `seq 0`.
 5. `sig` verifies under the keyring key for `kid`, with that key's `seq` window and the record domain. `rotation` records update the expected window.
 6. `boot` changes only at `boot` records; `mono` non-decreasing within a `boot`; `ts` non-decreasing across the file set.
-7. Heartbeats: `heartbeat_s` is read from the most recent `boot` record (not from the command line). No two consecutive records may be more than `2 × heartbeat_s` apart in `ts` without a `heartbeat` between them. **Staleness:** if `now − last.ts > 2 × heartbeat_s`, report `stale`.
+7. Heartbeats: `heartbeat_s` is read from the most recent `boot` record (not from the command line). No two consecutive records may be more than `2 × heartbeat_s` apart in `ts` without a `heartbeat` between them. **Staleness:** if `now − last.ts > 2 × heartbeat_s`, report `stale`, where `now` is the wall clock unless `--now` was given.
 8. Anchors (when the anchor directory is present): every `anchor` record's `oracle_ref` matches the sha256 of a sink receipt line; every sink receipt's `head` equals the hash of the record at its `seq`; sink receipts are checked for forks (two receipts for one `seq`, or heads that do not descend); **`record.ts` at an anchored seq ≤ `sink_ts` + 60 s** (fabricated timestamps bounded by the sink's clock); **anchor cadence:** no more than `anchor_every` decision records and no more than `anchor_max_s` of `ts` between anchors, and the head must be anchored within `anchor_max_s` of `last.ts` — otherwise `anchor_gap`.
 9. Reasons: `reason` present in section `reason_v`.
 10. Reconciliation (when consumer action logs are present): every acted-upon receipt's `(log_id, seq, hash)` must equal the line at that `seq` in the log. A mismatch is `unlogged_approval` and is the most severe finding the verifier produces.
@@ -363,6 +363,10 @@ Produced by an implementation that is **not** the Python under test (a ~100-line
 Two independent reviews (security review of the spec; delivery review of the plan). Accepted and folded in: receipt binding to cart/app/log_id/freshness/single-use (critical); inclusion ≠ signing → consumer action logs + reconciler (critical); anchor-gap, staleness, exit code 4, cadence read from `boot` record; genesis pinned to seq 0, rotation by `Log` only, no re-genesis; harness holes (consumer action log ⊆ log, per-mode expected outcomes, liveness floor, classify by send time, drain before flip — see testkit section in PLAN); `boot` field and record type; keyring windows, rotation record, one algorithm per schema; line-is-canonical with round-trip check, hash includes sig, non-ASCII forbidden; regexes for every string; anchor/heartbeat type rules; boot self-check scope; torn-write and `fsync(dir)` rules; `AnchorReceipt` as JCS with sink timestamp used; `Approved.from_wire`; threat-model claims tied to mechanisms; reasons sections; exit-code semantics; heartbeat from the request loop with `since_hb`; perf target → benchmark. **Checked rather than accepted:** both reviewers asserted AWS KMS lacks Ed25519; the KMS documentation says otherwise (§12.2). The spec keeps Vault as the reference signer for the reason that survives (no cloud account needed) and allows KMS as an optional adapter with the RAW-vs-prehash constraint stated.
 
 Rejected or modified: "drop per-record signatures" — not proposed by either reviewer, kept; "Rekor in v0.1" — stretch, field reserved; the suggestion that the consumer read the gate log directly for inclusion — rejected in favor of the action log + reconciler, because giving every consumer read access to the log widens the log's reader set and the reconciler keeps verification in one package.
+
+## 14a. Post-vector clarifications (2026-10-11)
+
+Three gaps surfaced by generating the §11 vectors, all resolved in favour of what the generator did: the record hash excludes the trailing `\n` (§3.2); a genesis `boot` record carries the zero-hash in `cart_hash` and non-decision records carry `app: gate` (§3.4); the verifier takes `--now` so fixed-date vectors can exit 0 (§5). None of these change any committed vector.
 
 ## 15. Sources
 

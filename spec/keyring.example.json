@@ -1,1 +1,0 @@
-{"keys":[{"alg":"ed25519","kid":"gate-test-1","pub":"REPLACED-BY-VECTORS-GO","role":"gate","valid_from_seq":0,"valid_to_seq":null},{"alg":"ed25519","kid":"sink-test-1","pub":"REPLACED-BY-VECTORS-GO","role":"sink","valid_from_seq":0,"valid_to_seq":null}],"log_id":"test","v":1}

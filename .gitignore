@@ -2,7 +2,10 @@
 # ai-audit-trail
 .denylist.local
 spec/vectors.regen/
+spec/vectors.regen.sha256
+tools/vectors-go/vectors-go
 runs/
 *.sqlite
 deploy/.keys/
 _to_delete/
+**/__pycache__/

@@ -38,8 +38,9 @@ mutations:
 	  git checkout -- . && git clean -fdq; echo "ok: $$d"; \
 	done
 
-vectors:
-	cd tools/vectors-go && go run . --out ../../spec/vectors && cd ../../spec && sha256sum vectors/*/* > vectors.sha256
+vectors:   # regenerates everything under spec/vectors plus spec/vectors.sha256; a vector change needs a spec version bump
+	rm -rf spec/vectors spec/vectors.sha256
+	cd tools/vectors-go && go run . --out ../../spec/vectors
 
 skeleton:   # M1
 	docker compose -f deploy/compose.yml up --abort-on-container-exit --exit-code-from verifier
