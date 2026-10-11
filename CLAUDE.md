@@ -43,7 +43,7 @@ packages/audittrail-verify/    verifier + reconciler CLI (import root: audittrai
 packages/audittrail-testkit/   mock model, oracle stub, harness, conformance (import root: audittrail_testkit)
 apps/gate-stub/  apps/consumer-stub/  apps/gate-stub-go/
 tools/vectors-go/  tools/anchors-pull/
-spec/            the contract: schema, reasons, keyring example, vectors (+ manifest)
+spec/            the contract: schema, reasons, published test seeds, vectors (+ generated keyring and manifest)
 mutations/       I*.diff
 deploy/          compose, hardening, schedules
 ```

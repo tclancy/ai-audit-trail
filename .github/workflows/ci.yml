@@ -34,20 +34,39 @@ jobs:
       - run: pip install check-jsonschema==0.29.4
       - name: manifest
         run: cd spec && sha256sum -c vectors.sha256
-      - name: positive vectors validate
+      - name: positive vectors validate line by line
         run: |
-          shopt -s nullglob
-          for f in spec/vectors/positive/*.json; do check-jsonschema --schemafile spec/record.schema.json "$f"; done
-      - name: negative vectors are rejected
+          set -euo pipefail
+          n=0
+          for f in $(find spec/vectors/positive -name '*.jsonl' | sort); do
+            while IFS= read -r line; do
+              printf '%s\n' "$line" > /tmp/rec.json
+              check-jsonschema --schemafile spec/record.schema.json /tmp/rec.json
+              n=$((n+1))
+            done < "$f"
+          done
+          echo "validated $n positive records"
+          test "$n" -gt 0
+      - name: every negative vector has a line the schema rejects, or is not JSON at all
         run: |
-          shopt -s nullglob
-          for f in spec/vectors/negative/*.json; do
-            if check-jsonschema --schemafile spec/record.schema.json "$f" >/dev/null 2>&1; then
-              echo "negative vector validated but should not: $f"; exit 1
+          set -uo pipefail
+          for d in $(find spec/vectors/negative -mindepth 1 -maxdepth 1 -type d | sort); do
+            rejected=0
+            for f in $(find "$d" -name '*.jsonl' | sort); do
+              while IFS= read -r line || [ -n "$line" ]; do
+                printf '%s\n' "$line" > /tmp/rec.json
+                if ! check-jsonschema --schemafile spec/record.schema.json /tmp/rec.json >/dev/null 2>&1; then rejected=1; fi
+              done < "$f"
+            done
+            # Byte-level negatives (BOM, CRLF, trailing space, unsorted keys, duplicate key, float, exponent, -0, non-ASCII, surrogate)
+            # are still schema-valid JSON once parsed; only the round-trip check (SPEC §5 check 1) rejects them.
+            check=$(sed -n 's/^check=\([0-9]*\) .*/\1/p' "$d/vector.expect")
+            if [ "$rejected" -eq 0 ] && [ "$check" != "1" ] && [ "$check" != "4" ] && [ "$check" != "5" ] && [ "$check" != "9" ]; then
+              echo "negative vector $(basename "$d") expects check $check but the schema accepted every line"; exit 1
             fi
           done
-      # Note: schema-level rejection is necessary, not sufficient. Round-trip (check 1) and
-      # signature (check 5) rejections are exercised by audittrail_verify's own tests.
+      # Schema-level rejection is necessary, not sufficient: checks 1 (round trip), 4 (chain), 5 (signature)
+      # and 9 (reasons) are exercised by tools/vectors-go's tests now and by audittrail_verify's tests from M1.
 
   vectors-regenerate:
     runs-on: ubuntu-24.04
