@@ -15,7 +15,8 @@ Humans: keep this file honest. Check items only when merged.
 - [x] CI: lint (`ruff`), types (`mypy --strict`), docstrings (`interrogate --fail-under 100`), `import-linter` contract forbidding `audittrail` imports from `audittrail_verify`.
 - [x] Pre-commit: `gitleaks` plus a hook that runs a **local, uncommitted** denylist file (`.denylist.local`, gitignored) over staged content, commit messages, and PR bodies.
 - [x] `README.md`: isolation statement (SPEC §9.4) and "what this does not do" above the fold; one-paragraph description; no feature list. Already drafted; agent reviews against SPEC §1.3 and §9.4 and fixes drift.
-- [ ] `SECURITY.md`: disclosure address, response commitment, supported versions, and the wire-format versioning promise (schema `v` changes only on a major release; old records verify forever).
+- [x] `SECURITY.md`: disclosure address, response commitment, supported versions, and the wire-format versioning promise (schema `v` changes only on a major release; old records verify forever).
+- [ ] `SECURITY.md`: the contact email is `tclancy@gmail.com`, in the file, as the route for reporters who cannot use GitHub. (Tom, 2026-10-11)
 - [ ] M0 done check: CI green; every positive vector validates; every negative vector rejected with its check number; manifest check passes.
 
 ## Next: M1 — Walking skeleton (see PLAN.md)
