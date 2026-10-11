@@ -1,0 +1,298 @@
+# SPDX-License-Identifier: Apache-2.0
+"""One log line as a value: strict parse, canonical bytes, hash, and field rules (SPEC §3).
+
+A `Record` cannot hold free text (I8): every `str` field is matched against its SPEC
+§3.1 regex or enum at construction, every `int` field is a non-bool integer in
+`[0, 2^53)`, and the §3.4 per-type fixed values and the genesis rule are checked too.
+Nothing here signs, verifies a signature, or knows about neighbouring records beyond
+the genesis rule; `prev` continuity is the chain's job and `sig` is the signer's.
+"""
+
+from __future__ import annotations
+
+import dataclasses
+import hashlib
+import json
+import re
+from typing import Any, ClassVar, NoReturn
+
+ZERO_HASH = "sha256:" + "0" * 64
+"""`prev` at genesis and the "not consulted" `oracle_ref` (SPEC §3.1)."""
+
+HEARTBEAT_CART_HASH = "sha256:" + hashlib.sha256(b"audittrail-heartbeat").hexdigest()
+"""`cart_hash` of every heartbeat record (SPEC §3.4)."""
+
+
+class RecordError(ValueError):
+    """A line or field set that is not a valid record. `check` is its SPEC §5 number."""
+
+    check: ClassVar[int] = 0
+
+
+class ParseError(RecordError):
+    """Check 1: not printable ASCII, not strict JSON, or not its own canonical bytes."""
+
+    check = 1
+
+
+class SchemaError(RecordError):
+    """Check 2: wrong field set, a value outside its regex, enum, or range, or a §3.4 rule."""
+
+    check = 2
+
+
+class ChainError(RecordError):
+    """Check 4, the part one record can decide alone: the genesis rule (SPEC §3.6)."""
+
+    check = 4
+
+
+_SHA256 = re.compile(r"sha256:[0-9a-f]{64}")
+_ULID = re.compile(r"[0-9A-HJKMNP-TV-Z]{26}")
+_ID = re.compile(r"[a-z0-9-]{1,32}")
+
+STRING_RULES: dict[str, re.Pattern[str] | frozenset[str]] = {
+    "log_id": _ID,
+    "type": frozenset({"boot", "decision", "heartbeat", "anchor", "rotation"}),
+    "boot": _ULID,
+    "ts": re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z"),
+    "request_id": _ULID,
+    "actor": re.compile(r"spiffe://[a-z0-9.-]{1,64}/[a-z0-9/_.-]{1,128}"),
+    "app": _ID,
+    "template_hash": _SHA256,
+    "model_id": re.compile(r"[A-Za-z0-9._:-]{1,64}"),
+    "policy_hash": _SHA256,
+    "input_ref": _SHA256,
+    "cart_hash": _SHA256,
+    "oracle": frozenset({"match", "mismatch", "unavailable", "timeout", "not_consulted"}),
+    "oracle_ref": _SHA256,
+    "decision": frozenset({"approve", "reject"}),
+    "reason": re.compile(r"R_[A-Z0-9_]{1,40}"),
+    "canary": frozenset({"pass", "fail", "not_run"}),
+    "kid": _ID,
+    "prev": _SHA256,
+    "sig": re.compile(r"ed25519:[A-Za-z0-9+/]{86}=="),
+}
+"""SPEC §3.1, one entry per string field. Deleting an entry opens a text channel (I8)."""
+
+INT_FIELDS: frozenset[str] = frozenset({"v", "seq", "mono", "reason_v", "since_hb"})
+"""SPEC §3.1 integer fields; each must be a non-bool `int` in `[0, 2^53)`, and `v == 1`."""
+
+_INT_LIMIT = 2**53
+
+_FIXED_BY_TYPE: dict[str, dict[str, str]] = {
+    "boot": {"decision": "reject", "oracle": "not_consulted", "app": "gate"},
+    "heartbeat": {
+        "decision": "reject",
+        "oracle": "not_consulted",
+        "app": "gate",
+        "reason": "R_HEARTBEAT",
+        "cart_hash": HEARTBEAT_CART_HASH,
+        "oracle_ref": ZERO_HASH,
+    },
+    "anchor": {
+        "decision": "reject",
+        "oracle": "not_consulted",
+        "app": "gate",
+        "reason": "R_ANCHOR",
+    },
+    "rotation": {
+        "decision": "reject",
+        "oracle": "not_consulted",
+        "app": "gate",
+        "reason": "R_KEY_ROTATION",
+        "oracle_ref": ZERO_HASH,
+    },
+}
+"""SPEC §3.4 values that one record fixes by its `type`. `decision` records fix nothing."""
+
+_BOOT_REASONS = frozenset({"R_BOOT", "R_BOOT_TRUNCATED"})
+
+
+@dataclasses.dataclass(frozen=True, slots=True, kw_only=True)
+class Record:
+    """One validated log line. Final, immutable, and not copyable by protocol (SPEC §4)."""
+
+    v: int
+    log_id: str
+    type: str
+    seq: int
+    boot: str
+    ts: str
+    mono: int
+    request_id: str
+    actor: str
+    app: str
+    template_hash: str
+    model_id: str
+    policy_hash: str
+    input_ref: str
+    cart_hash: str
+    oracle: str
+    oracle_ref: str
+    decision: str
+    reason: str
+    reason_v: int
+    since_hb: int
+    canary: str
+    kid: str
+    prev: str
+    sig: str
+
+    def __post_init__(self) -> None:
+        """Validate every field, then the per-type values, then genesis. Checks no signature."""
+        _validate_strings(self)
+        _validate_integers(self)
+        _validate_type_rules(self)
+        _validate_genesis(self)
+
+    def __init_subclass__(cls, **kwargs: object) -> NoReturn:
+        """Refuse subclasses, so no subclass can relax a rule."""
+        raise TypeError("Record is final")
+
+    def __reduce__(self) -> NoReturn:
+        """Refuse the copy and persistence protocols; a Record travels only as its line."""
+        raise TypeError("Record cannot be copied or serialized by protocol; use line()")
+
+    @classmethod
+    def from_line(cls, line: bytes) -> Record:
+        """Parse one canonical line, given without its trailing newline.
+
+        Raises `ParseError` if the bytes are not their own canonical form, `SchemaError`
+        or `ChainError` if the fields are not a valid record. Never normalizes input.
+        """
+        obj = parse_line(line)
+        if set(obj) != FIELDS:
+            raise SchemaError(f"field set is not SPEC §3.1: {sorted(set(obj) ^ FIELDS)}")
+        return cls(**obj)
+
+    def line(self) -> bytes:
+        """Return the canonical bytes of this record, without a trailing newline."""
+        return canonical_bytes(dataclasses.asdict(self))
+
+    def hash(self) -> str:
+        """Return `sha256:<hex>` over `line()` (SPEC §3.2): includes `sig`, excludes the newline."""
+        return "sha256:" + hashlib.sha256(self.line()).hexdigest()
+
+
+FIELDS: frozenset[str] = frozenset(f.name for f in dataclasses.fields(Record))
+"""The exact SPEC §3.1 field set; a line with any other set is rejected."""
+
+
+def _validate_strings(record: Record) -> None:
+    """Every entry in STRING_RULES must match its value exactly. Does not check ints."""
+    for name, rule in STRING_RULES.items():
+        value = getattr(record, name)
+        if type(value) is not str:
+            raise SchemaError(f"{name}: not a string")
+        ok = value in rule if isinstance(rule, frozenset) else rule.fullmatch(value) is not None
+        if not ok:
+            raise SchemaError(f"{name}: value does not match its rule")
+
+
+def _validate_integers(record: Record) -> None:
+    """Every INT_FIELDS value is a non-bool int in `[0, 2^53)`; `v` is 1. Does not check strs."""
+    for name in INT_FIELDS:
+        value = getattr(record, name)
+        if type(value) is not int or not 0 <= value < _INT_LIMIT:
+            raise SchemaError(f"{name}: not an integer in [0, 2^53)")
+    if record.v != 1:
+        raise SchemaError("v: schema version is not 1")
+
+
+def _validate_type_rules(record: Record) -> None:
+    """Apply the SPEC §3.4 fixed values for the record's `type`. Does not check genesis."""
+    for name, want in _FIXED_BY_TYPE.get(record.type, {}).items():
+        if getattr(record, name) != want:
+            raise SchemaError(f"{name}: a {record.type} record fixes this value")
+    if record.type == "boot" and record.reason not in _BOOT_REASONS:
+        raise SchemaError("reason: a boot record carries R_BOOT or R_BOOT_TRUNCATED")
+
+
+def _validate_genesis(record: Record) -> None:
+    """Zero-hash `prev` exactly at `seq == 0`, which is a `boot` with zero-hash `cart_hash`."""
+    if record.seq == 0:
+        if record.type != "boot" or record.prev != ZERO_HASH or record.cart_hash != ZERO_HASH:
+            raise ChainError("seq 0 must be a boot record with zero-hash prev and cart_hash")
+    elif record.prev == ZERO_HASH:
+        raise ChainError("zero-hash prev outside genesis")
+
+
+def parse_line(line: bytes) -> dict[str, Any]:
+    """Strictly parse one line to a dict, requiring `line == canonical_bytes(parse(line))`.
+
+    Rejects any byte outside printable ASCII (so BOM, CRLF, newline, and non-ASCII), duplicate
+    keys, floats, exponents, `-0`, `NaN`/`Infinity`, non-object top levels, and any
+    byte-level difference from canonical form. Does not check the field set.
+    """
+    _require_printable_ascii(line)
+    try:
+        obj = json.loads(
+            line.decode("ascii"),
+            object_pairs_hook=_pairs_without_duplicates,
+            parse_float=_refuse_number,
+            parse_int=_non_negative_int,
+            parse_constant=_refuse_number,
+        )
+    except (json.JSONDecodeError, RecursionError) as e:
+        raise ParseError(f"not strict JSON: {e}") from e
+    if not isinstance(obj, dict):
+        raise ParseError("line is not a JSON object")
+    if canonical_bytes(obj) != line:
+        raise ParseError("line is not its own canonical form")
+    return obj
+
+
+def canonical_bytes(obj: dict[str, Any]) -> bytes:
+    """RFC 8785 (JCS) bytes of `obj` for the record alphabet.
+
+    Every string is required to be printable ASCII and every number an `int`, which is
+    the alphabet SPEC §3.1 permits; within it, JCS is exactly compact JSON with keys
+    sorted by code point. Raises `ParseError` on anything outside that alphabet rather
+    than guessing at JCS number or escape formatting. Does not append a newline.
+    """
+    _require_canonical_alphabet(obj)
+    text = json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    return text.encode("ascii")
+
+
+def _require_printable_ascii(line: bytes) -> None:
+    """Raise `ParseError` unless every byte is in `0x20..0x7e`. Empty lines are rejected."""
+    if not line or any(b < 0x20 or b > 0x7E for b in line):
+        raise ParseError("line has a byte outside printable ASCII, or is empty")
+
+
+def _require_canonical_alphabet(value: object) -> None:
+    """Raise `ParseError` on a float, or a string with a char outside `0x20..0x7e`, anywhere."""
+    if isinstance(value, dict):
+        for k, v in value.items():
+            _require_canonical_alphabet(k)
+            _require_canonical_alphabet(v)
+    elif isinstance(value, list):
+        for v in value:
+            _require_canonical_alphabet(v)
+    elif isinstance(value, str):
+        if any(c < " " or c > "~" for c in value):
+            raise ParseError("string has a char outside printable ASCII")
+    elif type(value) is float:
+        raise ParseError("floats are not in the canonical alphabet")
+
+
+def _pairs_without_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    """Build an object from parsed pairs; a repeated key is a `ParseError`."""
+    obj = dict(pairs)
+    if len(obj) != len(pairs):
+        raise ParseError("duplicate key")
+    return obj
+
+
+def _non_negative_int(text: str) -> int:
+    """Parse an integer literal; `-0` and every other negative literal is a `ParseError`."""
+    if text.startswith("-"):
+        raise ParseError("negative integer literal")
+    return int(text)
+
+
+def _refuse_number(text: str) -> NoReturn:
+    """Reject floats, exponents, `NaN` and `Infinity`: the schema has integers only."""
+    raise ParseError(f"non-integer number literal {text!r}")
