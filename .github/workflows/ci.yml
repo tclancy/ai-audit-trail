@@ -79,6 +79,10 @@ jobs:
         run: |
           cd tools/vectors-go && go run . --out ../../spec/vectors.regen
           diff -r ../../spec/vectors ../../spec/vectors.regen
+      # Every negative vector fails at the check number in its vector.expect, and
+      # every positive vector passes checks 1-5 and 9. The schema job above cannot
+      # see checks 1, 4, 5 or 9; this is the step that proves the M0 done check.
+      - run: make vectors-test
 
   tests:
     runs-on: ubuntu-24.04
