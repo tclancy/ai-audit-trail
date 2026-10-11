@@ -22,9 +22,9 @@ Humans: keep this file honest. Check items only when merged.
 ## Next: M1 — Walking skeleton (see PLAN.md)
 
 - [X] `audittrail.Record` with regex validators for every string field (I8), strict parser (duplicate keys, floats, non-ASCII, unknown fields all rejected), JCS serialization, round-trip check, `sha256` hashing, zero-hash genesis. Tests against `spec/vectors/`.
-- [ ] Nesting depth 5 and derived line length per SPEC §3.1/§3.2/§5 (issue #11): string-aware byte-level depth counter in `parse_line` and the line maximum derived from `STRING_RULES`/`INT_FIELDS` and pinned to 1398 by a test; the matching counter and bound in the Go checker's `roundTrips`, a value-type check in its `fieldsValid`, and its negative-vector count; the four §11 vectors from `tools/vectors-go` (regenerating `spec/vectors` and bumping the revision in `SPEC.md`'s title line: human); mutation diffs for both bounds.
-- [ ] `Signer` protocol; `SoftwareSigner` gated on `AUDITTRAIL_DEV=1` (I12). Test: signs the published seed's vectors bit-identically.
-- [ ] `Log.record` with file lock, prev-from-disk, `fsync`, `boot` record at init; `LogUnavailable` on any failure (I2); refuse re-genesis.
+- [X] Nesting depth 5 and derived line length per SPEC §3.1/§3.2/§5 (issue #11): string-aware byte-level depth counter in `parse_line` and the line maximum derived from `STRING_RULES`/`INT_FIELDS` and pinned to 1398 by a test; the matching counter and bound in the Go checker's `roundTrips`, a value-type check in its `fieldsValid`, and its negative-vector count; the four §11 vectors from `tools/vectors-go` (regenerating `spec/vectors` and bumping the revision in `SPEC.md`'s title line: human); mutation diffs for both bounds.
+- [X] `Signer` protocol; `SoftwareSigner` gated on `AUDITTRAIL_DEV=1` (I12). Test: signs the published seed's vectors bit-identically.
+- [X] `Log.record` with file lock, prev-from-disk, `fsync`, `boot` record at init; `LogUnavailable` on any failure (I2); refuse re-genesis.
 - [ ] `Receipt`; `Approved.from_wire` enforcing SPEC §6 rules 1–7 with an in-memory `SeenStore` (I1).
 - [ ] `audittrail_verify` CLI: checks 1–5, exit codes 0/2/3/4; tests read only `spec/`.
 - [ ] Domain separation test (I11); key-material grep test (I13).
