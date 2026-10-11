@@ -13,6 +13,10 @@ import hashlib
 import json
 import os
 import re
+import shutil
+import stat
+import subprocess
+import sys
 import threading
 import typing
 from pathlib import Path
@@ -20,7 +24,7 @@ from pathlib import Path
 import pytest
 from audittrail.log import BOOT_CONFIG_TEMPLATE, DecisionFields, Log, LogUnavailable, Receipt
 from audittrail.record import STRING_RULES, ZERO_HASH, Record, SchemaError, canonical_bytes
-from audittrail.signing import DOMAIN_RECORD, SoftwareSigner
+from audittrail.signing import DOMAIN_RECORD, SigningError, SoftwareSigner
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 SPEC = Path(__file__).resolve().parents[3] / "spec"
@@ -375,8 +379,13 @@ def test_receipt_is_final_and_not_copyable_by_protocol(
         copy.copy(receipt)
     with pytest.raises(TypeError):
 
-        class Sub(Receipt):
+        class Sub(Receipt):  # type: ignore[misc]
             """Never constructed; the class statement must raise."""
+
+    with pytest.raises(TypeError):
+
+        class SubFields(DecisionFields):  # type: ignore[misc]
+            """Never constructed either; a subclass could skip the field rules."""
 
 
 def test_request_ids_are_ulids_in_crockford_base32(tmp_path: Path, signer: SoftwareSigner) -> None:
@@ -386,3 +395,164 @@ def test_request_ids_are_ulids_in_crockford_base32(tmp_path: Path, signer: Softw
     for value in (record.boot, record.request_id):
         assert re.fullmatch(r"[0-9A-HJKMNP-TV-Z]{26}", value)
     assert record.boot == Record.from_line(lines_of(tmp_path)[0]).boot
+
+
+# --- mechanisms the review found unpinned ------------------------------------
+
+
+def test_a_directory_with_a_rotated_second_file_is_refused(
+    tmp_path: Path, signer: SoftwareSigner
+) -> None:
+    """The two-file vector: with both files, or only the later one, init raises, writes nothing."""
+    src = SPEC / "vectors" / "positive" / "rotation-two-files"
+    both = tmp_path / "both"
+    both.mkdir()
+    for f in src.glob("*.jsonl"):
+        shutil.copy(f, both / f.name)
+    before = {f.name: f.read_bytes() for f in both.glob("*.jsonl")}
+    with pytest.raises(LogUnavailable):
+        open_log(both, signer)
+    assert {f.name: f.read_bytes() for f in both.glob("*.jsonl")} == before
+    later_only = tmp_path / "later"
+    later_only.mkdir()
+    shutil.copy(src / "test.0000000000000003.jsonl", later_only)
+    with pytest.raises(LogUnavailable):
+        open_log(later_only, signer)
+    assert sorted(f.name for f in later_only.glob("*.jsonl")) == ["test.0000000000000003.jsonl"]
+
+
+class FailingSigner:
+    """A Signer whose key refuses; the Log must turn that into LogUnavailable."""
+
+    kid = "gate-test-1"
+
+    def sign(self, domain: bytes, data: bytes) -> bytes:
+        """Always refuse."""
+        raise SigningError("refused")
+
+
+def test_a_failing_signer_is_log_unavailable_at_genesis_and_at_record(
+    tmp_path: Path, signer: SoftwareSigner
+) -> None:
+    """A SigningError never escapes as itself, and nothing is written for it."""
+    with pytest.raises(LogUnavailable):
+        Log(
+            tmp_path,
+            "test",
+            FailingSigner(),
+            actor=GATE,
+            template_hash=TEMPLATE,
+            model_id="test-model-1",
+            policy_hash=POLICY,
+        )
+    assert not list(tmp_path.glob("*.jsonl"))
+    log = open_log(tmp_path, signer)
+    before = lines_of(tmp_path)
+    log._signer = FailingSigner()
+    with pytest.raises(LogUnavailable):
+        log.record(approve())
+    assert lines_of(tmp_path) == before
+
+
+def test_genesis_fsyncs_the_file_and_the_directory_and_record_fsyncs_the_file(
+    tmp_path: Path, signer: SoftwareSigner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every write reaches fsync before returning; genesis also fsyncs the directory."""
+    synced: list[bool] = []
+    real_fsync = os.fsync
+
+    def spy(fd: int) -> None:
+        """Record whether the fd is a directory, then really fsync it."""
+        synced.append(stat.S_ISDIR(os.fstat(fd).st_mode))
+        real_fsync(fd)
+
+    monkeypatch.setattr(os, "fsync", spy)
+    log = open_log(tmp_path, signer)
+    assert synced == [False, True]
+    synced.clear()
+    log.record(approve())
+    assert synced == [False]
+
+
+def test_record_waits_for_a_lock_held_by_another_process(
+    tmp_path: Path, signer: SoftwareSigner
+) -> None:
+    """With another process holding LOCK_EX on the file, record() blocks until it is released."""
+    log = open_log(tmp_path, signer)
+    path = tmp_path / "test.0000000000000000.jsonl"
+    holder = subprocess.Popen(  # noqa: S603 - fixed argv, our own interpreter
+        [
+            sys.executable,
+            "-c",
+            "import fcntl, sys\n"
+            f"fd = open({str(path)!r}, 'rb')\n"
+            "fcntl.flock(fd, fcntl.LOCK_EX)\n"
+            "print('locked', flush=True)\n"
+            "sys.stdin.readline()\n",
+        ],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        assert holder.stdout is not None and holder.stdin is not None
+        assert holder.stdout.readline().strip() == "locked"
+        done = threading.Event()
+
+        def write_one() -> None:
+            """Append one record, then flag completion."""
+            log.record(approve())
+            done.set()
+
+        writer = threading.Thread(target=write_one)
+        writer.start()
+        assert not done.wait(0.5), "record() returned while another process held the lock"
+        holder.stdin.write("go\n")
+        holder.stdin.flush()
+        writer.join(10)
+        assert done.is_set()
+    finally:
+        holder.kill()
+        holder.wait()
+    assert len(lines_of(tmp_path)) == 2
+
+
+def test_genesis_create_is_exclusive(
+    tmp_path: Path, signer: SoftwareSigner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If the file appears between the existence check and the create, the create refuses."""
+    open_log(tmp_path, signer)
+    before = lines_of(tmp_path)
+    monkeypatch.setattr(Path, "exists", lambda self: False)
+    with pytest.raises(LogUnavailable):
+        open_log(tmp_path, signer)
+    assert lines_of(tmp_path) == before
+
+
+def test_wall_clock_going_backwards_is_refused(
+    tmp_path: Path, signer: SoftwareSigner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A ts earlier than the head's is never written; the file is unchanged."""
+    import audittrail.log as log_module
+
+    log = open_log(tmp_path, signer)
+    before = lines_of(tmp_path)
+    monkeypatch.setattr(log_module, "_ts_now", lambda: "2000-01-01T00:00:00.000Z")
+    with pytest.raises(LogUnavailable):
+        log.record(approve())
+    assert lines_of(tmp_path) == before
+
+
+def test_head_is_compared_by_hash_not_by_seq(tmp_path: Path, signer: SoftwareSigner) -> None:
+    """Another log's genesis at the same seq, swapped in behind the writer, is a mismatch."""
+    a, b = tmp_path / "a", tmp_path / "b"
+    a.mkdir()
+    b.mkdir()
+    log_a = open_log(a, signer)
+    open_log(b, signer)
+    swapped = (b / "test.0000000000000000.jsonl").read_bytes()
+    assert Record.from_line(swapped.rstrip(b"\n")).seq == 0
+    (a / "test.0000000000000000.jsonl").write_bytes(swapped)
+    with pytest.raises(LogUnavailable):
+        log_a.record(approve())
+    assert (a / "test.0000000000000000.jsonl").read_bytes() == swapped

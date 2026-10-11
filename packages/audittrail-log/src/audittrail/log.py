@@ -3,9 +3,12 @@
 
 Every write takes a file lock, reads the last complete line from disk, checks it is the head
 this writer last saw, builds and signs the next record, writes the whole line in one call and
-`fsync`s it. Any failure at any step is `LogUnavailable`; nothing is written partially on
-purpose, and nothing is ever rewritten. Not here yet: heartbeats, anchors, key rotation,
-file rotation, the torn-line discard, and the boot self-check through the verifier (M2, M3).
+`fsync`s it. Any failure at any step is `LogUnavailable` and nothing is ever rewritten. The
+exact guarantee: a line for which `record()` raised may still be on disk, complete and
+correctly chained, with no receipt issued; a short write (disk full, size limit) can leave
+partial bytes that every writer then refuses until M2's torn-line discard. Not here yet:
+heartbeats, anchors, key rotation, file rotation (a directory with more than the first file
+is refused), the torn-line discard, and the boot self-check through the verifier (M2, M3).
 """
 
 from __future__ import annotations
@@ -19,7 +22,7 @@ import threading
 import time
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, NoReturn
+from typing import Any, NoReturn, final
 
 from audittrail.record import (
     MAX_LINE_BYTES,
@@ -48,6 +51,7 @@ class LogUnavailable(Exception):
     """The log could not be read, extended, or trusted. The caller rejects; nothing was written."""
 
 
+@final
 @dataclasses.dataclass(frozen=True, slots=True, kw_only=True)
 class DecisionFields:
     """What a gate supplies for one decision; every value is rule-checked at construction (I8).
@@ -74,7 +78,12 @@ class DecisionFields:
         for f in dataclasses.fields(self):
             validate_string_field(f.name, getattr(self, f.name))
 
+    def __init_subclass__(cls, **kwargs: object) -> NoReturn:
+        """Refuse every subclass, so none can skip the field rules."""
+        raise TypeError("DecisionFields is final")
 
+
+@final
 class Receipt:
     """The bytes of one written decision line and its parsed record. Final; not copyable.
 
@@ -118,24 +127,12 @@ class Log:
         """Validate the identity values, read the head from disk, and write the boot record.
 
         Genesis happens only when no log file exists for `log_id`. An existing file whose last
-        line is not a complete, valid record is refused. Does not verify the chain behind the
-        head and does not read the anchor sink; those checks are the verifier's.
+        line is not a complete, valid record is refused, and so is a directory holding any file
+        for `log_id` other than the first (file rotation is M2). Does not verify the chain
+        behind the head and does not read the anchor sink; those checks are the verifier's.
         """
-        for name, value in (
-            ("log_id", log_id),
-            ("actor", actor),
-            ("template_hash", template_hash),
-            ("model_id", model_id),
-            ("policy_hash", policy_hash),
-        ):
-            validate_string_field(name, value)
-        for int_name, int_value in (
-            ("heartbeat_s", heartbeat_s),
-            ("anchor_every", anchor_every),
-            ("anchor_max_s", anchor_max_s),
-        ):
-            if type(int_value) is not int or int_value <= 0:
-                raise SchemaError(f"{int_name}: not a positive integer")
+        _check_identity(log_id, actor, template_hash, model_id, policy_hash)
+        _check_cadence(heartbeat_s, anchor_every, anchor_max_s)
         self._dir = Path(directory)
         self._path = self._dir / f"{log_id}.{0:016d}.jsonl"
         self._log_id = log_id
@@ -169,22 +166,30 @@ class Log:
         return self._append("decision", dataclasses.asdict(fields))
 
     def _write_boot(self) -> None:
-        """Create the file with a genesis boot, or append a boot naming the current head."""
+        """Create the file with a genesis boot, or append a boot adopting the head on disk.
+
+        Refuses a directory with any other file for this log_id. The existing-file path goes
+        through `_append`, so the head is read under the lock like every other write.
+        """
+        others = [p for p in self._dir.glob(f"{self._log_id}.*.jsonl") if p != self._path]
+        if others:
+            raise LogUnavailable("the directory holds more than the first log file")
+        if self._path.exists():
+            self._append("boot", self._boot_fields())
+            return
         with self._lock:
             try:
-                head = _read_head(self._path)
-            except (OSError, RecordError) as e:
-                raise LogUnavailable(f"cannot read the log head: {e}") from e
-            if head is None:
                 line = self._signed_line("boot", self._boot_fields(), seq=0, prev=ZERO_HASH)
-                _create_with_line(self._path, line)
-                self._head, self._head_hash = Record.from_line(line), _sha256_of(line)
-                return
-            self._head, self._head_hash = head
-        self._append("boot", self._boot_fields())
+            except (RecordError, SigningError) as e:
+                raise LogUnavailable(f"cannot build genesis: {e}") from e
+            _create_with_line(self._path, line)
+            self._head, self._head_hash = Record.from_line(line), _sha256_of(line)
 
     def _boot_fields(self) -> dict[str, Any]:
-        """SPEC §3.4 values of a boot record. `cart_hash` is filled from `prev` at write time."""
+        """Return the SPEC §3.4 values of a boot record; `cart_hash` is set at write time.
+
+        `R_BOOT` only: the truncated variant waits for M2's discard rule.
+        """
         return {
             "actor": self._actor,
             "app": "gate",
@@ -201,7 +206,11 @@ class Log:
         }
 
     def _append(self, record_type: str, specific: dict[str, Any]) -> Receipt:
-        """Lock, re-read the head from disk, build, sign, write one line, fsync. Never partial."""
+        """Lock, re-read the head from disk, build, sign, write one line, fsync.
+
+        Raises `LogUnavailable` on any failure. A line may be on disk without a receipt if the
+        failure came after the write; it is then the head and this writer refuses to go on.
+        """
         with self._lock:
             try:
                 fd = os.open(self._path, os.O_RDWR | os.O_APPEND)
@@ -225,9 +234,17 @@ class Log:
             return Receipt(line, entry)
 
     def _require_disk_head_matches(self, fd: int) -> Record:
-        """Return the head record on disk; raise unless it is the one this writer last wrote."""
+        """Return the head record on disk; raise unless it is the one this writer last wrote.
+
+        Before this writer's first write (its boot on an existing file) it has no head of its
+        own and adopts the one on disk. Compares by hash, never by `seq` alone.
+        """
         head = _read_head_fd(fd)
-        if head is None or head[1] != self._head_hash:
+        if head is None:
+            raise LogUnavailable("the log has no head")
+        if self._head is None:
+            self._head, self._head_hash = head
+        elif head[1] != self._head_hash:
             raise LogUnavailable("the log head on disk is not the one this writer last wrote")
         return head[0]
 
@@ -238,6 +255,8 @@ class Log:
         ts = _ts_now()
         if self._head is not None and ts < self._head.ts:
             raise LogUnavailable("the wall clock went backwards")
+        # `mono` passes 2^53 ns about 104 days into one boot; Record then refuses every write
+        # until the process restarts. A policy for long-lived processes is an M2 question.
         fields: dict[str, Any] = {
             "v": 1,
             "log_id": self._log_id,
@@ -258,24 +277,37 @@ class Log:
         return Record(**fields).line()
 
 
-def _read_head(path: Path) -> tuple[Record, str] | None:
-    """Return the last line of the file as (record, hash), or None if the file does not exist.
+def _check_identity(
+    log_id: str, actor: str, template_hash: str, model_id: str, policy_hash: str
+) -> None:
+    """Raise `SchemaError` unless each identity value matches its SPEC §3.1 rule."""
+    for name, value in (
+        ("log_id", log_id),
+        ("actor", actor),
+        ("template_hash", template_hash),
+        ("model_id", model_id),
+        ("policy_hash", policy_hash),
+    ):
+        validate_string_field(name, value)
 
-    An empty file, a file not ending in a newline, or a last line that is not a valid record
-    raises `RecordError` or `LogUnavailable`; this never guesses and never re-genesises.
-    """
-    try:
-        fd = os.open(path, os.O_RDONLY)
-    except FileNotFoundError:
-        return None
-    try:
-        return _read_head_fd(fd)
-    finally:
-        os.close(fd)
+
+def _check_cadence(heartbeat_s: int, anchor_every: int, anchor_max_s: int) -> None:
+    """Raise `SchemaError` unless each cadence value is a positive int below 2^53. Nothing more."""
+    for name, value in (
+        ("heartbeat_s", heartbeat_s),
+        ("anchor_every", anchor_every),
+        ("anchor_max_s", anchor_max_s),
+    ):
+        if type(value) is not int or not 0 < value < 2**53:
+            raise SchemaError(f"{name}: not a positive integer below 2^53")
 
 
 def _read_head_fd(fd: int) -> tuple[Record, str] | None:
-    """Return the last complete line of an open file as (record, hash). Reads only the tail."""
+    """Return the last complete line of an open file as (record, hash). Reads only the tail.
+
+    Raises `LogUnavailable` on an empty file or a tail without its newline, `RecordError` on
+    a last line that is not a record. Does not read or check any earlier line.
+    """
     size = os.fstat(fd).st_size
     if size == 0:
         raise LogUnavailable("the log file is empty; a log never re-genesises")
@@ -310,7 +342,11 @@ def _create_with_line(path: Path, line: bytes) -> None:
 
 
 def _write_line(fd: int, line: bytes) -> None:
-    """Write `line` plus newline in one call and fsync. A short write is an OSError."""
+    """Write `line` plus newline in one call and fsync. A short write is an OSError.
+
+    Does not retry and does not undo a short write; the bytes that landed stay for the boot
+    rules to deal with. On Darwin `fsync` does not flush the drive cache; the spec says fsync.
+    """
     data = line + b"\n"
     written = os.write(fd, data)
     if written != len(data):
@@ -319,17 +355,21 @@ def _write_line(fd: int, line: bytes) -> None:
 
 
 def _sha256_of(data: bytes) -> str:
-    """`sha256:<hex>` of the bytes."""
+    """Return `sha256:<hex>` of the bytes. Does not strip a newline; callers pass the line."""
     return "sha256:" + hashlib.sha256(data).hexdigest()
 
 
 def _ts_now() -> str:
-    """Return the wall clock as SPEC §3.1 `ts`: UTC, millisecond precision, `Z`."""
+    """Return the wall clock as SPEC §3.1 `ts`: UTC, millisecond precision, `Z`. Not monotone."""
     now = datetime.now(UTC)
     return now.strftime("%Y-%m-%dT%H:%M:%S.") + f"{now.microsecond // 1000:03d}Z"
 
 
 def _ulid() -> str:
-    """Return a ULID: 48-bit millisecond timestamp, 80 random bits, Crockford base32."""
+    """Return a ULID: 48-bit millisecond timestamp, 80 random bits, Crockford base32.
+
+    Not sortable within one millisecond, and not a secret. The timestamp overflows 48 bits in
+    the year 10889, where Python's own clock gives out first.
+    """
     value = (time.time_ns() // 1_000_000) << 80 | int.from_bytes(os.urandom(10), "big")
     return "".join(_CROCKFORD[(value >> (5 * i)) & 31] for i in range(25, -1, -1))
