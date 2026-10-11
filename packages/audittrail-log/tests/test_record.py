@@ -110,8 +110,19 @@ def test_every_record_field_has_a_regex_enum_or_integer_rule() -> None:
 
 
 def genesis_boot(vectors_dir: Path) -> Record:
-    """The genesis record of the `genesis-boot` vector."""
+    """The genesis record of the `genesis-boot` vector. Use only for genesis and boot rules."""
     return Record.from_line(log_lines(vectors_dir / "positive" / "genesis-boot")[0])
+
+
+def approve_decision(vectors_dir: Path) -> Record:
+    """The approving decision of the `decision-approve` vector.
+
+    Field-rule tests use this record, not the boot: on a `decision` nothing but `since_hb` is
+    fixed by type, so a rejection can only come from the field's own regex, enum or range.
+    """
+    record = Record.from_line(log_lines(vectors_dir / "positive" / "decision-approve")[1])
+    assert record.type == "decision" and record.decision == "approve"
+    return record
 
 
 @pytest.mark.parametrize("field", sorted(STRING_RULES))
@@ -119,7 +130,7 @@ def test_free_text_is_rejected_in_every_string_field(vectors_dir: Path, field: s
     """A value with a space never constructs, whatever the field."""
     change: dict[str, Any] = {field: "free text here"}
     with pytest.raises(SchemaError):
-        dataclasses.replace(genesis_boot(vectors_dir), **change)
+        dataclasses.replace(approve_decision(vectors_dir), **change)
 
 
 @pytest.mark.parametrize("field", sorted(INT_FIELDS))
@@ -128,7 +139,7 @@ def test_bad_integers_are_rejected(vectors_dir: Path, field: str, value: object)
     """Bools, negatives, 2^53 and floats are not integers in [0, 2^53)."""
     change: dict[str, Any] = {field: value}
     with pytest.raises(SchemaError):
-        dataclasses.replace(genesis_boot(vectors_dir), **change)
+        dataclasses.replace(approve_decision(vectors_dir), **change)
 
 
 def test_genesis_requires_seq_zero_boot_and_zero_prev(vectors_dir: Path) -> None:
@@ -172,6 +183,8 @@ def test_parse_error_carries_check_one_and_schema_error_check_two() -> None:
         {"a": "\x7f"},
         {"a": 1.0},
         {"a": 2**53 + 1},
+        {"a": 2**60},
+        {"a": 2**63},
         {"a": 10**21},
         {"a": -(10**21)},
         {"a": (1,)},
@@ -195,7 +208,8 @@ def test_canonical_bytes_refuses_values_outside_the_alphabet(obj: dict[Any, Any]
         ({"a": 'q"b\\'}, b'{"a":"q\\"b\\\\"}'),
         ({"a": -1}, b'{"a":-1}'),
         ({"a": 2**53}, b'{"a":9007199254740992}'),
-        ({"a": 2**60}, b'{"a":1152921504606846976}'),
+        ({"a": 2**53 + 2}, b'{"a":9007199254740994}'),
+        ({"a": 10**16}, b'{"a":10000000000000000}'),
         ({"a": [1, "x", None, True]}, b'{"a":[1,"x",null,true]}'),
     ],
 )
@@ -239,7 +253,7 @@ def test_wrong_python_type_in_a_string_field_is_rejected(vectors_dir: Path) -> N
     """An int where a str belongs fails the field rule, not the regex."""
     change: dict[str, Any] = {"model_id": 7}
     with pytest.raises(SchemaError):
-        dataclasses.replace(genesis_boot(vectors_dir), **change)
+        dataclasses.replace(approve_decision(vectors_dir), **change)
 
 
 def test_canonical_bytes_walks_lists() -> None:
@@ -273,7 +287,6 @@ def genesis_line(vectors_dir: Path) -> bytes:
         ((b'"mono":0,', b'"mono":-1,'), 2),
         ((b'"mono":0,', b'"mono":-0,'), 1),
         ((b'"mono":0,', b'"mono":' + b"[" * 1000 + b"]" * 1000 + b","), 2),
-        ((b'"mono":0,', b'"mono":' + b"[" * 5000 + b"]" * 5000 + b","), 2),
         ((b'"mono":0,', b'"mono":' + b"[" * 100000 + b"]" * 100000 + b","), 1),
         ((b'"mono":0,', b'"mono":[[1]],'), 2),
         ((b'"mono":0,', b'"mono":{"a":{"b":1}},'), 2),
@@ -290,7 +303,9 @@ def test_hostile_lines_raise_only_record_errors_at_the_reference_check(
 ) -> None:
     """Each edit of the genesis line fails with a `RecordError` at the Go reference's check number.
 
-    `pytest.raises(RecordError)` fails on a bare `ValueError` or `RecursionError`.
+    `pytest.raises(RecordError)` fails on a bare `ValueError` or `RecursionError`. Nesting is
+    pinned at 1000 (both sides round-trip) and 100000 (both reject); between roughly 5000 and
+    10000 the two parsers' depth limits differ and neither side accepts the record.
     """
     line = genesis_line(vectors_dir).replace(*edit)
     assert line != genesis_line(vectors_dir)
@@ -338,12 +353,12 @@ FIXED_BY_TYPE: list[tuple[str, str, str | int]] = [
 
 def records_of_type(vectors_dir: Path, record_type: str) -> list[Record]:
     """Every record of `record_type` across the positive vectors; fails if there are none."""
-    found = [
+    parsed = [
         Record.from_line(line)
         for vector in vector_dirs(vectors_dir, "positive")
         for line in log_lines(vector)
-        if Record.from_line(line).type == record_type
     ]
+    found = [r for r in parsed if r.type == record_type]
     assert found, record_type
     return found
 
@@ -405,10 +420,17 @@ def test_near_miss_values_are_rejected_per_field(vectors_dir: Path, field: str, 
     """Each regex and enum rejects a value one step outside it; no field has a looser rule."""
     change: dict[str, Any] = {field: bad}
     with pytest.raises(SchemaError):
-        dataclasses.replace(genesis_boot(vectors_dir), **change)
+        dataclasses.replace(approve_decision(vectors_dir), **change)
 
 
 def test_field_rules_cover_every_regex_field() -> None:
     """NEAR_MISSES and FIXED_BY_TYPE together name every string field at least once."""
     named = {f for f, _ in NEAR_MISSES} | {f for _, f, _ in FIXED_BY_TYPE}
     assert set(STRING_RULES) <= named
+
+
+def test_from_line_rejects_non_bytes_with_a_record_error() -> None:
+    """`str`, `bytearray` and `memoryview` are not lines; the rejection is still typed."""
+    for not_bytes in ("{}", bytearray(b"{}"), memoryview(b"{}")):
+        with pytest.raises(ParseError):
+            Record.from_line(not_bytes)  # type: ignore[arg-type]

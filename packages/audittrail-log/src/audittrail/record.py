@@ -11,6 +11,7 @@ the genesis rule; `prev` continuity is the chain's job and `sig` is the signer's
 from __future__ import annotations
 
 import dataclasses
+import decimal
 import hashlib
 import json
 import re
@@ -239,6 +240,8 @@ def parse_line(line: bytes) -> dict[str, Any]:
     and nested values round-trip and are left to the schema (check 2), as in the Go reference.
     Does not check the field set.
     """
+    if type(line) is not bytes:
+        raise ParseError("line is not bytes")
     _require_printable_ascii(line)
     try:
         obj = json.loads(
@@ -260,11 +263,13 @@ def parse_line(line: bytes) -> dict[str, Any]:
 def canonical_bytes(obj: dict[str, Any]) -> bytes:
     """RFC 8785 (JCS) bytes of `obj` for the record alphabet.
 
-    The alphabet is: string keys and values of chars `0x00..0x7e` only, integers a double holds
-    exactly and below 10^21, `true`, `false`, `null`, lists and objects. Within it, JCS is exactly
-    compact JSON with keys sorted by code point and the escapes the standard library writes.
-    Raises `ParseError` on anything outside it (non-ASCII, DEL, floats, other ints, tuples)
-    rather than guessing at JCS number or escape formatting. Does not append a newline.
+    The alphabet is: string keys and values of chars `0x00..0x7e` only, integers that JCS
+    prints verbatim (see `_is_canonical_int`), `true`, `false`, `null`, lists and objects.
+    Within it, JCS is exactly compact JSON with keys sorted by code point and the escapes the
+    standard library writes. Raises `ParseError` on anything outside it (non-ASCII, DEL, floats,
+    other ints, tuples) rather than guessing at JCS number or escape formatting. Does not
+    append a newline. The `RecursionError` catch is defensive: on CPython 3.12 the parser
+    overflows first, so it is not reachable through `parse_line`.
     """
     _require_canonical_alphabet(obj)
     try:
@@ -285,8 +290,13 @@ _INT_PRINTED_IN_FULL = 10**21
 
 
 def _is_canonical_int(n: int) -> bool:
-    """Return whether JCS prints `n` verbatim: a double holds it exactly and |n| < 10^21."""
-    return abs(n) < _INT_PRINTED_IN_FULL and int(float(n)) == n
+    """Return whether JCS prints `n` verbatim.
+
+    JCS prints the shortest digits that round-trip through a double, zero-padded, so `n` is
+    verbatim only when those digits are `n` itself and |n| < 10^21. `repr(float)` is that
+    shortest form. Does not decide whether `n` is in the schema's range.
+    """
+    return abs(n) < _INT_PRINTED_IN_FULL and decimal.Decimal(repr(float(n))) == n
 
 
 def _require_canonical_alphabet(obj: object) -> None:
@@ -318,7 +328,11 @@ def _require_canonical_alphabet(obj: object) -> None:
 
 
 def _pairs_without_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
-    """Build an object from parsed pairs; a repeated key is a `ParseError`."""
+    """Build an object from parsed pairs; a repeated key is a `ParseError`.
+
+    The round-trip check would also catch a duplicate (the canonical form has one key), so
+    removing this changes the message, not the verdict; it exists for the clearer error.
+    """
     obj = dict(pairs)
     if len(obj) != len(pairs):
         raise ParseError("duplicate key")
@@ -329,6 +343,7 @@ def _integer_literal(text: str) -> int:
     """Parse an integer literal; `-0` (JCS writes `0`) and one too long to convert are `ParseError`.
 
     Other negatives parse, so that range is the schema's finding (check 2), as in the reference.
+    The round-trip check would also catch `-0`; the explicit refusal exists for the clearer error.
     """
     if text == "-0":
         raise ParseError("-0 is not canonical")
