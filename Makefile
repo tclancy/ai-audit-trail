@@ -28,7 +28,7 @@ lint:
 
 # Python roots that mypy checks: each package, app, and tool directory that holds
 # at least one .py file. Derived, so a new app is checked as soon as it has code.
-PY_ROOTS = $(shell for d in packages/* apps/* tools/anchors-pull; do \
+PY_ROOTS = $(shell for d in packages/* apps/* tools; do \
   [ -n "$$(find $$d -name '*.py' -print -quit)" ] && echo $$d; done)
 SRC_PATH = $(shell ls -d packages/*/src | paste -sd: -)
 
@@ -38,7 +38,7 @@ types:
 	@for d in $(PY_ROOTS); do MYPYPATH=$(SRC_PATH) mypy --strict $$d || exit 1; done
 
 docs:
-	interrogate --fail-under 100 packages apps
+	interrogate --fail-under 100 packages apps tools
 
 test:
 	pytest -q

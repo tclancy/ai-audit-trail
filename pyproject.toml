@@ -14,7 +14,7 @@ strict = true
 python_version = "3.12"
 
 [tool.pytest.ini_options]
-testpaths = ["packages", "apps"]
+testpaths = ["packages", "apps", "tools"]
 # importlib mode: test files with the same basename in two packages do not collide.
 addopts = "--import-mode=importlib"
 
