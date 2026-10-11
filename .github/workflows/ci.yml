@@ -17,11 +17,12 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install -r requirements-dev.txt
+      # The packages' declared dependencies must be present before mypy runs.
+      - run: pip install -e packages/audittrail-verify -e packages/audittrail-log -e packages/audittrail-testkit
       # Same targets as `make check`, so CI and local runs cannot drift apart.
       - run: make lint
       - run: make types
       - run: make docs
-      - run: pip install -e packages/audittrail-verify -e packages/audittrail-log -e packages/audittrail-testkit
       - run: lint-imports   # import-linter: audittrail_verify must not import audittrail
 
   schema-and-vectors:
