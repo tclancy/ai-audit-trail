@@ -464,6 +464,20 @@ def test_max_string_len_agrees_with_the_regex_engine() -> None:
             assert MAX_STRING_LEN[name] == hi, name
 
 
+def test_max_line_bytes_is_derived_not_typed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Widening one field's maximum by one byte moves the derived total by one byte."""
+    import audittrail.record as record
+
+    monkeypatch.setitem(record.MAX_STRING_LEN, "model_id", MAX_STRING_LEN["model_id"] + 1)
+    assert record._max_line_bytes() == MAX_LINE_BYTES + 1
+
+
+def test_line_too_long_vector_is_one_byte_over(vectors_dir: Path) -> None:
+    """The committed `line-too-long` vector is exactly MAX_LINE_BYTES + 1 bytes (SPEC §11)."""
+    [line] = log_lines(vectors_dir / "negative" / "line-too-long")
+    assert len(line) == MAX_LINE_BYTES + 1
+
+
 def test_longest_positive_vector_line_fits(vectors_dir: Path) -> None:
     """The bound is not below any committed canonical line."""
     longest = max(len(line) for v in vector_dirs(vectors_dir, "positive") for line in log_lines(v))

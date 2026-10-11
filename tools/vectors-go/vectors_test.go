@@ -91,6 +91,39 @@ func TestNegativeVectorsFailAtTheirExpectedCheck(t *testing.T) {
 	}
 }
 
+func TestLineTooLongIsExactlyOneByteOverTheSpecMaximum(t *testing.T) {
+	out := generated(t)
+	line := bytes.TrimSuffix(mustRead(t, filepath.Join(out, "negative", "line-too-long", logFileName(0))), []byte("\n"))
+	if len(line) != 1399 { // SPEC §3.2 states 1398; the literal here pins the constant, as the Python does
+		t.Fatalf("line-too-long is %d bytes, want 1399", len(line))
+	}
+	if nestingDepth(line) != 1 {
+		t.Fatalf("line-too-long nests %d deep, want 1", nestingDepth(line))
+	}
+}
+
+func TestNestingDepthCountsContainersOutsideStrings(t *testing.T) {
+	cases := []struct {
+		line  string
+		depth int
+	}{
+		{`{}`, 1},
+		{`{"a":[1]}`, 2},
+		{`{"a":[[[[1]]]]}`, 5},
+		{`{"a":[[[[[1]]]]]}`, 6},
+		{`{"a":"{{{{{{{{"}`, 1},
+		{`{"a":"[\"[[[[[[["}`, 1},
+		{`{"a":"\\","b":[[[[[[1]]]]]]}`, 7},
+		{`{"a":"\u0022[[[["}`, 1},
+		{``, 0},
+	}
+	for _, c := range cases {
+		if got := nestingDepth([]byte(c.line)); got != c.depth {
+			t.Errorf("%s: depth %d, want %d", c.line, got, c.depth)
+		}
+	}
+}
+
 func TestNoTwoNegativeVectorsShareLogBytes(t *testing.T) {
 	out := generated(t)
 	seen := map[string]string{}

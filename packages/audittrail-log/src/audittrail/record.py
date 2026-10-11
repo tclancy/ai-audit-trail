@@ -295,8 +295,8 @@ def parse_line(line: bytes) -> dict[str, Any]:
     """
     if type(line) is not bytes:
         raise ParseError("line is not bytes")
-    _require_printable_ascii(line)
     _require_within_bounds(line)
+    _require_printable_ascii(line)
     try:
         obj = json.loads(
             line.decode("ascii"),
@@ -334,7 +334,11 @@ def canonical_bytes(obj: dict[str, Any]) -> bytes:
 
 
 def _require_within_bounds(line: bytes) -> None:
-    """Raise `ParseError` if the line is over MAX_LINE_BYTES or nests past MAX_NESTING_DEPTH."""
+    """Raise `ParseError` if the line is over MAX_LINE_BYTES or nests past MAX_NESTING_DEPTH.
+
+    Length is checked first so an oversized line costs nothing beyond `len`. Does not parse,
+    does not check that brackets balance, and does not look at the bytes' values otherwise.
+    """
     if len(line) > MAX_LINE_BYTES:
         raise ParseError("line is longer than any record can be")
     if nesting_depth(line) > MAX_NESTING_DEPTH:
