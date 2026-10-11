@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"testing"
@@ -75,8 +76,8 @@ func TestPositiveVectorsPassEveryCheck(t *testing.T) {
 func TestNegativeVectorsFailAtTheirExpectedCheck(t *testing.T) {
 	out := generated(t)
 	dirs := vectorDirs(t, out, "negative")
-	if len(dirs) != 17 {
-		t.Fatalf("want 17 negative vectors, got %d", len(dirs))
+	if len(dirs) != 21 {
+		t.Fatalf("want 21 negative vectors, got %d", len(dirs))
 	}
 	for _, dir := range dirs {
 		raw, _ := os.ReadFile(filepath.Join(dir, "vector.expect"))
@@ -176,15 +177,49 @@ func firstFailingCheck(t *testing.T, out, dir string, lines [][]byte) int {
 	return 0
 }
 
-// roundTrips is check 1: ASCII only, and JCS(parse(line)) == line.
+// roundTrips is check 1: ASCII only, within the SPEC §3.1 depth and §3.2
+// length bounds (counted over the bytes before parsing), and
+// JCS(parse(line)) == line.
 func roundTrips(line []byte) bool {
 	for _, c := range line {
 		if c > 0x7e || c < 0x20 {
 			return false
 		}
 	}
+	if len(line) > maxLineBytes || nestingDepth(line) > maxNestingDepth {
+		return false
+	}
 	got, err := jcs.Transform(line)
 	return err == nil && bytes.Equal(got, line)
+}
+
+// nestingDepth is SPEC §3.1's structural depth: `{` and `[` outside string
+// literals open a level, the outer object counting as 1; bytes inside a
+// string literal, including escaped quotes, never change it.
+func nestingDepth(line []byte) int {
+	depth, deepest := 0, 0
+	inString, escaped := false, false
+	for _, c := range line {
+		switch {
+		case inString && escaped:
+			escaped = false
+		case inString && c == '\\':
+			escaped = true
+		case inString && c == '"':
+			inString = false
+		case inString:
+		case c == '"':
+			inString = true
+		case c == '{' || c == '[':
+			depth++
+			if depth > deepest {
+				deepest = depth
+			}
+		case c == '}' || c == ']':
+			depth--
+		}
+	}
+	return deepest
 }
 
 // recordFields is SPEC §3.1's field list.
@@ -192,8 +227,30 @@ var recordFields = strings.Fields(`v log_id type seq boot ts mono request_id act
 	template_hash model_id policy_hash input_ref cart_hash oracle oracle_ref decision
 	reason reason_v since_hb canary kid prev sig`)
 
-// fieldsValid is the part of check 2 this test needs: exact field set, and
-// every number an integer in [0, 2^53).
+// stringRules is SPEC §3.1's regex or enum for every string field, anchored.
+var stringRules = func() map[string]*regexp.Regexp {
+	sha := `sha256:[0-9a-f]{64}`
+	ulid := `[0-9A-HJKMNP-TV-Z]{26}`
+	id := `[a-z0-9-]{1,32}`
+	src := map[string]string{
+		"log_id": id, "type": `boot|decision|heartbeat|anchor|rotation`, "boot": ulid,
+		"ts":         `[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}Z`,
+		"request_id": ulid, "actor": `spiffe://[a-z0-9.-]{1,64}/[a-z0-9/_.-]{1,128}`, "app": id,
+		"template_hash": sha, "model_id": `[A-Za-z0-9._:-]{1,64}`, "policy_hash": sha,
+		"input_ref": sha, "cart_hash": sha, "oracle": `match|mismatch|unavailable|timeout|not_consulted`,
+		"oracle_ref": sha, "decision": `approve|reject`, "reason": `R_[A-Z0-9_]{1,40}`,
+		"canary": `pass|fail|not_run`, "kid": id, "prev": sha, "sig": `ed25519:[A-Za-z0-9+/]{86}==`,
+	}
+	rules := map[string]*regexp.Regexp{}
+	for f, s := range src {
+		rules[f] = regexp.MustCompile(`^(?:` + s + `)$`)
+	}
+	return rules
+}()
+
+// fieldsValid is the part of check 2 this test needs: exact field set, every
+// string matching its §3.1 rule, every number an integer in [0, 2^53), and
+// nothing else as a value. It does not check the §3.4 per-type values.
 func fieldsValid(o map[string]any) bool {
 	if len(o) != len(recordFields) {
 		return false
@@ -203,11 +260,22 @@ func fieldsValid(o map[string]any) bool {
 		if !ok {
 			return false
 		}
-		if n, isNum := v.(json.Number); isNum {
+		switch n := v.(type) {
+		case string:
+			rule, isString := stringRules[f]
+			if !isString || !rule.MatchString(n) {
+				return false
+			}
+		case json.Number:
+			if _, isString := stringRules[f]; isString {
+				return false
+			}
 			i, err := n.Int64()
 			if err != nil || i < 0 || i >= 1<<53 {
 				return false
 			}
+		default:
+			return false
 		}
 	}
 	return true

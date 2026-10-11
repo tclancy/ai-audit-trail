@@ -86,6 +86,36 @@ INT_FIELDS: frozenset[str] = frozenset({"v", "seq", "mono", "reason_v", "since_h
 
 _INT_LIMIT = 2**53
 
+MAX_STRING_LEN: dict[str, int] = {
+    "log_id": 32,
+    "type": len("heartbeat"),
+    "boot": 26,
+    "ts": 24,
+    "request_id": 26,
+    "actor": len("spiffe://") + 64 + 1 + 128,
+    "app": 32,
+    "template_hash": 7 + 64,
+    "model_id": 64,
+    "policy_hash": 7 + 64,
+    "input_ref": 7 + 64,
+    "cart_hash": 7 + 64,
+    "oracle": len("not_consulted"),
+    "oracle_ref": 7 + 64,
+    "decision": len("approve"),
+    "reason": 2 + 40,
+    "canary": len("not_run"),
+    "kid": 32,
+    "prev": 7 + 64,
+    "sig": 8 + 86 + 2,
+}
+"""The longest value each STRING_RULES entry admits. A test asks the regex engine to agree."""
+
+MAX_INT_DIGITS = len(str(_INT_LIMIT - 1))
+"""Digits of the largest schema integer, 2^53 - 1; `v` is the one-digit exception."""
+
+MAX_NESTING_DEPTH = 5
+"""SPEC §3.1: a line nested deeper than this, counting the outer object as 1, is check 1."""
+
 _FIXED_BY_TYPE: dict[str, dict[str, str | int]] = {
     "decision": {"since_hb": 0},
     "boot": {"decision": "reject", "oracle": "not_consulted", "app": "gate", "since_hb": 0},
@@ -189,6 +219,27 @@ FIELDS: frozenset[str] = frozenset(f.name for f in dataclasses.fields(Record))
 """The exact SPEC §3.1 field set; a line with any other set is rejected."""
 
 
+def _max_line_bytes() -> int:
+    """Derive SPEC §3.2's maximum line length from the field tables; never hand-set it.
+
+    Per field in key order: the key plus 3 for its quotes and colon, then the longest value
+    plus 2 for its quotes if a string, or its digit count if an integer; plus the commas and
+    the braces. Excludes the trailing newline.
+    """
+    total = 2 + (len(FIELDS) - 1)
+    for name in sorted(FIELDS):
+        total += len(name) + 3
+        if name in MAX_STRING_LEN:
+            total += MAX_STRING_LEN[name] + 2
+        else:
+            total += 1 if name == "v" else MAX_INT_DIGITS
+    return total
+
+
+MAX_LINE_BYTES = _max_line_bytes()
+"""SPEC §3.2: a line longer than this, without its newline, is check 1 before parsing."""
+
+
 def _validate_strings(record: Record) -> None:
     """Every entry in STRING_RULES must match its value exactly. Does not check ints."""
     for name, rule in STRING_RULES.items():
@@ -234,15 +285,18 @@ def _validate_genesis_prev(record: Record) -> None:
 def parse_line(line: bytes) -> dict[str, Any]:
     """Strictly parse one line to a dict, requiring `line == canonical_bytes(parse(line))`.
 
-    Rejects any byte outside printable ASCII (so BOM, CRLF, newline, and non-ASCII), duplicate
-    keys, floats, exponents, `-0`, `NaN`/`Infinity`, non-object top levels, and any
-    byte-level difference from canonical form. Negative integers, escaped control characters,
-    and nested values round-trip and are left to the schema (check 2), as in the Go reference.
-    Does not check the field set.
+    Rejects any byte outside printable ASCII (so BOM, CRLF, newline, and non-ASCII), a line
+    longer than MAX_LINE_BYTES or nested deeper than MAX_NESTING_DEPTH (both counted over the
+    bytes before parsing, SPEC §5 check 1), duplicate keys, floats, exponents, `-0`,
+    `NaN`/`Infinity`, non-object top levels, and any byte-level difference from canonical form.
+    Negative integers, escaped control characters, and nested values within the depth bound
+    round-trip and are left to the schema (check 2), as in the Go reference. Does not check
+    the field set.
     """
     if type(line) is not bytes:
         raise ParseError("line is not bytes")
     _require_printable_ascii(line)
+    _require_within_bounds(line)
     try:
         obj = json.loads(
             line.decode("ascii"),
@@ -277,6 +331,41 @@ def canonical_bytes(obj: dict[str, Any]) -> bytes:
     except RecursionError as e:
         raise ParseError("nested too deeply to serialize") from e
     return text.encode("ascii")
+
+
+def _require_within_bounds(line: bytes) -> None:
+    """Raise `ParseError` if the line is over MAX_LINE_BYTES or nests past MAX_NESTING_DEPTH."""
+    if len(line) > MAX_LINE_BYTES:
+        raise ParseError("line is longer than any record can be")
+    if nesting_depth(line) > MAX_NESTING_DEPTH:
+        raise ParseError("line nests deeper than any record can")
+
+
+def nesting_depth(line: bytes) -> int:
+    """Return the deepest container nesting in `line`, the outer object counting as 1.
+
+    Counts `{` and `[` outside strings only, honouring backslash escapes inside strings, so
+    a bracket inside a string value is not nesting. Does not parse and does not check that
+    brackets balance; an unbalanced line fails later in the JSON parser.
+    """
+    depth = deepest = 0
+    in_string = escaped = False
+    for b in line:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif b == 0x5C:
+                escaped = True
+            elif b == 0x22:
+                in_string = False
+        elif b == 0x22:
+            in_string = True
+        elif b in (0x7B, 0x5B):
+            depth += 1
+            deepest = max(deepest, depth)
+        elif b in (0x7D, 0x5D):
+            depth -= 1
+    return deepest
 
 
 def _require_printable_ascii(line: bytes) -> None:

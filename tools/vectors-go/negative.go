@@ -2,7 +2,10 @@
 
 package main
 
-import "bytes"
+import (
+	"bytes"
+	"strings"
+)
 
 // SPEC §5 check numbers recorded in vector.expect.
 const (
@@ -62,12 +65,19 @@ func (g *generator) byteNegatives() []vector {
 }
 
 // signedNegatives are canonical, correctly signed lines (unless the signature
-// is the point) that break exactly one later rule.
+// is the point) that break exactly one later rule. nested-too-deep and
+// line-too-long are canonical too: they fail check 1 only because SPEC §3.1
+// and §3.2 bound depth and length before parsing.
 func (g *generator) signedNegatives() []vector {
+	fiveDeep := []any{[]any{[]any{[]any{[]any{int64(0)}}}}}
 	return []vector{
 		g.genesisVariant("int-2-pow-53", checkSchema, func(f map[string]any) { f["mono"] = int64(1) << 53 }),
 		g.genesisVariant("extra-field", checkSchema, func(f map[string]any) { f["note"] = "x" }),
 		g.genesisVariant("missing-field", checkSchema, func(f map[string]any) { delete(f, "canary") }),
+		g.genesisVariant("nested-value", checkSchema, func(f map[string]any) { f["mono"] = map[string]any{"a": int64(1)} }),
+		g.genesisVariant("brackets-in-string", checkSchema, func(f map[string]any) { f["model_id"] = "{{{{{{" }),
+		g.genesisVariant("nested-too-deep", checkRoundTrip, func(f map[string]any) { f["mono"] = fiveDeep }),
+		g.lineTooLong(),
 		g.unknownReason(),
 		g.zeroPrevAtSeq3(),
 		g.wrongDomain(),
@@ -85,6 +95,24 @@ func (g *generator) genesisVariant(name string, check int, change func(map[strin
 	change(f)
 	c.commit(f, g.keys[kidGate1].priv, domainRecord)
 	return negative(name, check, jsonl(c.lines))
+}
+
+// lineTooLong is a canonical, correctly signed genesis line of exactly
+// maxLineBytes+1 bytes: an extra last field padded to the byte. The signature
+// has a fixed length, so the padding is measured on a first build and applied
+// on a second.
+func (g *generator) lineTooLong() vector {
+	build := func(pad int) vector {
+		return g.genesisVariant("line-too-long", checkRoundTrip, func(f map[string]any) {
+			f["zz"] = strings.Repeat("a", pad)
+		})
+	}
+	unpadded := len(build(0).files[logFileName(0)]) - 1 // without "\n"
+	v := build(maxLineBytes + 1 - unpadded)
+	if got := len(v.files[logFileName(0)]) - 1; got != maxLineBytes+1 {
+		panic("line-too-long is not maxLineBytes+1 bytes")
+	}
+	return v
 }
 
 // unknownReason is genesis then a decision whose reason matches the regex but
