@@ -1,0 +1,12 @@
+diff --git a/packages/audittrail-log/src/audittrail/record.py b/packages/audittrail-log/src/audittrail/record.py
+index f879a57..04e777e 100644
+--- a/packages/audittrail-log/src/audittrail/record.py
++++ b/packages/audittrail-log/src/audittrail/record.py
+@@ -65,7 +65,6 @@ STRING_RULES: dict[str, re.Pattern[str] | frozenset[str]] = {
+     "actor": _regex(r"spiffe://[a-z0-9.-]{1,64}/[a-z0-9/_.-]{1,128}"),
+     "app": _ID,
+     "template_hash": _SHA256,
+-    "model_id": _regex(r"[A-Za-z0-9._:-]{1,64}"),
+     "policy_hash": _SHA256,
+     "input_ref": _SHA256,
+     "cart_hash": _SHA256,

@@ -55,7 +55,7 @@ mutations:
 	for d in "$$@"; do \
 	  git apply --check "$$d" || { echo "stale mutation: $$d"; exit 1; }; \
 	  git apply "$$d"; \
-	  if pytest -q -x >/dev/null 2>&1; then echo "mutation did not fail the suite: $$d"; git checkout -- . && git clean -fdq; exit 1; fi; \
+	  if PYTHONDONTWRITEBYTECODE=1 pytest -q -x -p no:cacheprovider >/dev/null 2>&1; then echo "mutation did not fail the suite: $$d"; git checkout -- . && git clean -fdq; exit 1; fi; \
 	  git checkout -- . && git clean -fdq; echo "ok: $$d"; \
 	done
 

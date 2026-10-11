@@ -1,0 +1,13 @@
+diff --git a/packages/audittrail-log/src/audittrail/record.py b/packages/audittrail-log/src/audittrail/record.py
+index f879a57..32366d2 100644
+--- a/packages/audittrail-log/src/audittrail/record.py
++++ b/packages/audittrail-log/src/audittrail/record.py
+@@ -252,8 +252,6 @@ def parse_line(line: bytes) -> dict[str, Any]:
+         raise ParseError(f"not strict JSON: {e}") from e
+     if not isinstance(obj, dict):
+         raise ParseError("line is not a JSON object")
+-    if canonical_bytes(obj) != line:
+-        raise ParseError("line is not its own canonical form")
+     return obj
+ 
+ 

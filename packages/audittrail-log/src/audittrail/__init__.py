@@ -1,1 +1,19 @@
-"""ai-audit-trail: log. See SPEC.md. Nothing here yet; M0 is contract-only."""
+"""ai-audit-trail: log. See SPEC.md. Exposes `Record` and its errors; nothing signs yet."""
+
+from audittrail.record import (
+    ChainError,
+    ParseError,
+    Record,
+    RecordError,
+    SchemaError,
+    canonical_bytes,
+)
+
+__all__ = [
+    "ChainError",
+    "ParseError",
+    "Record",
+    "RecordError",
+    "SchemaError",
+    "canonical_bytes",
+]
