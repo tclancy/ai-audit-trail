@@ -44,7 +44,7 @@ test:
 	pytest -q
 
 grep:
-	python tools/grep-tests.py
+	python tools/grep_tests.py
 
 # Applies each diff to the working tree and resets it afterwards, so it refuses
 # to run on a dirty tree rather than discard uncommitted work. With no diffs yet
