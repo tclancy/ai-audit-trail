@@ -1,4 +1,3 @@
-
 # ai-audit-trail
 .denylist.local
 spec/vectors.regen/
@@ -8,4 +7,49 @@ runs/
 *.sqlite
 deploy/.keys/
 _to_delete/
-**/__pycache__/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+.python-version
+build/
+dist/
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+.import_linter_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.tox/
+.nox/
+
+# Go
+tools/vectors-go/*.test
+apps/gate-stub-go/gate-stub-go
+
+# Secrets and local environment (never committed; see deploy/ for how they are created at run time)
+.env
+.env.*
+.envrc
+.direnv/
+
+# Editors and OS
+.idea/
+.vscode/
+*.swp
+*~
+.DS_Store
+Thumbs.db
+
+# Agent tooling
+.claude/settings.local.json
