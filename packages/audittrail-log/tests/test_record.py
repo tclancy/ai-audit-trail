@@ -192,3 +192,29 @@ def test_record_is_final_and_not_copyable_by_protocol(vectors_dir: Path) -> None
 
     with pytest.raises(TypeError):
         copy.copy(genesis_boot(vectors_dir))
+
+
+# --- SPEC §3.4 per-type values and remaining branches -----------------------
+
+
+def test_non_decision_types_fix_their_values(vectors_dir: Path) -> None:
+    """A heartbeat cannot approve; a boot cannot carry a decision reason."""
+    boot = genesis_boot(vectors_dir)
+    with pytest.raises(SchemaError):
+        dataclasses.replace(boot, decision="approve")
+    with pytest.raises(SchemaError):
+        dataclasses.replace(boot, reason="R_PARSE")
+
+
+def test_wrong_python_type_in_a_string_field_is_rejected(vectors_dir: Path) -> None:
+    """An int where a str belongs fails the field rule, not the regex."""
+    change: dict[str, Any] = {"model_id": 7}
+    with pytest.raises(SchemaError):
+        dataclasses.replace(genesis_boot(vectors_dir), **change)
+
+
+def test_canonical_bytes_walks_lists() -> None:
+    """A float or non-ASCII string inside a list is still outside the alphabet."""
+    with pytest.raises(ParseError):
+        canonical_bytes({"a": [1, 2.5]})
+    assert canonical_bytes({"a": [1, "x"]}) == b'{"a":[1,"x"]}'
