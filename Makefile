@@ -1,4 +1,4 @@
-.PHONY: check hooks hooks-installed pr lint types docs test mutations grep skeleton demo vectors
+.PHONY: check hooks hooks-installed pr lint types docs test mutations grep skeleton demo vectors vectors-test
 
 check: hooks-installed lint types docs test grep mutations
 
@@ -62,6 +62,12 @@ mutations:
 vectors:   # regenerates everything under spec/vectors plus spec/vectors.sha256; a vector change needs a spec version bump
 	rm -rf spec/vectors spec/vectors.sha256
 	cd tools/vectors-go && go run . --out ../../spec/vectors
+
+# The generator's own tests are the only check that every negative vector fails
+# at the check number in its vector.expect (checks 1, 4, 5 and 9 are invisible to
+# the JSON-Schema job). Not part of `make check`, which needs no Go toolchain.
+vectors-test:
+	cd tools/vectors-go && go test -count=1 ./...
 
 skeleton:   # M1
 	docker compose -f deploy/compose.yml up --abort-on-container-exit --exit-code-from verifier
