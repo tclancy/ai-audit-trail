@@ -1,0 +1,13 @@
+diff --git a/packages/audittrail-log/src/audittrail/log.py b/packages/audittrail-log/src/audittrail/log.py
+index e7c6915..83cab83 100644
+--- a/packages/audittrail-log/src/audittrail/log.py
++++ b/packages/audittrail-log/src/audittrail/log.py
+@@ -227,7 +227,7 @@ class Log:
+     def _require_disk_head_matches(self, fd: int) -> Record:
+         """Return the head record on disk; raise unless it is the one this writer last wrote."""
+         head = _read_head_fd(fd)
+-        if head is None or head[1] != self._head_hash:
++        if head is None:
+             raise LogUnavailable("the log head on disk is not the one this writer last wrote")
+         return head[0]
+ 
