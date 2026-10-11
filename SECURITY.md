@@ -2,7 +2,7 @@
 
 ## Reporting
 
-Use GitHub's private vulnerability report form: the repository's **Security** tab, then **Report a vulnerability**. Reports are visible only to the repository's administrators and the reporter. If you cannot use GitHub, email the address on the repository owner's GitHub profile with the subject line `ai-audit-trail security`.
+Use GitHub's private vulnerability report form: the repository's **Security** tab, then **Report a vulnerability**. Reports are visible only to the repository's administrators and the reporter. If you cannot use GitHub, email tclancy@gmail.com with the subject line `ai-audit-trail security`.
 
 Do not open a public issue for anything that could let a record be forged, a chain be rewritten undetected, an approval be replayed, or key material be exposed.
 
