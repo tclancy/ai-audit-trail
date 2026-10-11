@@ -12,6 +12,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 SRC = [ROOT / "packages", ROOT / "apps"]
 EXEMPT = {ROOT / "spec"}
+SPEC = ROOT / "SPEC.md"
+README = ROOT / "README.md"
 
 BYPASS = [
     r"\bstrict\s*=\s*False\b",
@@ -42,9 +44,24 @@ def scan(patterns: list[str]) -> list[str]:
     return hits
 
 
+def isolation_statement() -> str:
+    """Return the blockquote under SPEC §9.4, without its '> ' prefix. Does not parse Markdown."""
+    lines = SPEC.read_text(encoding="utf-8").splitlines()
+    start = next(i for i, line in enumerate(lines) if line.startswith("### 9.4"))
+    quote = next(line for line in lines[start:] if line.startswith("> "))
+    return quote[2:]
+
+
+def readme_drift() -> list[str]:
+    """Return a hit unless README.md carries SPEC §9.4 verbatim. Does not check §1.3 wording."""
+    if isolation_statement() in README.read_text(encoding="utf-8"):
+        return []
+    return ["README.md: the SPEC §9.4 isolation statement is missing or not verbatim"]
+
+
 def main() -> int:
     """Run all grep tests; non-zero on any hit."""
-    hits = scan(BYPASS) + scan(KEY_MATERIAL)
+    hits = scan(BYPASS) + scan(KEY_MATERIAL) + readme_drift()
     for h in hits:
         print(h)
     return 1 if hits else 0
