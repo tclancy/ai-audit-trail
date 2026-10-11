@@ -28,8 +28,9 @@ Humans: keep this file honest. Check items only when merged.
 - [ ] Domain separation test (I11); key-material grep test (I13).
 - [ ] 30-line `apps/gate-stub` and `apps/consumer-stub`; two-service `deploy/compose.yml`; `make skeleton`.
 - [ ] Mutation diffs for I1, I2, I3, I4 (chain), I8, I11, I12; CI mutation job; I15 apply-check.
+- [ ] Narrated demo, five scenes: `demo/demo.sh` (≈80 lines) against `make skeleton`, printing what happened after each scene. The agent is a shell loop posting carts; the README says so and why (requests are untrusted bytes whoever produced them). Scenes: (1) cart matches oracle → approve, receipt, consumer acts — show record line and action line side by side; (2) same account, different amount → `R_ORACLE_MISMATCH`, consumer receives nothing; (3) scene-1 receipt delivered twice → refused by `SeenStore`, then with a different cart → refused by `cart_hash`; (4) `sed` one byte in the log → `audittrail-verify` exit 2 naming the line, restore → exit 0; (5) oracle down, three carts → three `R_ORACLE_UNAVAILABLE`, zero approvals. Scene 6 (signed-but-unwritten receipt caught only by the reconciler) is added in M4. No anchors in the demo until M3. `make demo` runs it; it is the M1 acceptance artifact a stranger can run.
 - [ ] M1 done check per PLAN.md.
 
 ## Later milestones
 
-M2 verifier complete + heartbeats + rotation · M3 anchors (MinIO) + Vault signer · M4 reconciler + consumer action log · M5 test kit + compose demo · M6 Go stub + release · v0.2: typestate packages (`Untrusted → Candidate → Validated`) in Python, TypeScript, Rust, each proven against the `cart_hash` vectors. Details in `PLAN.md`.
+M2 verifier complete + heartbeats + rotation · M3 anchors (MinIO) + Vault signer · M4 reconciler + consumer action log + demo scene 6 (`unlogged_approval`) · M5 test kit + compose demo · M6 Go stub + release · v0.2: typestate packages (`Untrusted → Candidate → Validated`) in Python, TypeScript, Rust, each proven against the `cart_hash` vectors. Details in `PLAN.md`.
