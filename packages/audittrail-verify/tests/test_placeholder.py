@@ -2,4 +2,5 @@
 
 
 def test_import() -> None:
+    """Import `audittrail_verify`; does not check anything it contains."""
     import audittrail_verify  # noqa: F401
