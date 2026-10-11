@@ -91,7 +91,7 @@ jobs:
       - run: pip install -e packages/audittrail-verify -e packages/audittrail-log -e packages/audittrail-testkit
       - run: pytest -q --cov=audittrail --cov=audittrail_verify --cov-fail-under=90
       - name: grep tests (bypass tokens, key material, text channels)
-        run: python tools/grep-tests.py
+        run: python tools/grep_tests.py
 
   verifier-isolated:
     runs-on: ubuntu-24.04
