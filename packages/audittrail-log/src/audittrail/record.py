@@ -47,31 +47,36 @@ class ChainError(RecordError):
     check = 4
 
 
-_SHA256 = re.compile(r"sha256:[0-9a-f]{64}")
-_ULID = re.compile(r"[0-9A-HJKMNP-TV-Z]{26}")
-_ID = re.compile(r"[a-z0-9-]{1,32}")
+def _regex(pattern: str) -> re.Pattern[str]:
+    """Compile a SPEC §3.1 pattern with `re.ASCII`, so `[0-9]`-style classes never widen."""
+    return re.compile(pattern, re.ASCII)
+
+
+_SHA256 = _regex(r"sha256:[0-9a-f]{64}")
+_ULID = _regex(r"[0-9A-HJKMNP-TV-Z]{26}")
+_ID = _regex(r"[a-z0-9-]{1,32}")
 
 STRING_RULES: dict[str, re.Pattern[str] | frozenset[str]] = {
     "log_id": _ID,
     "type": frozenset({"boot", "decision", "heartbeat", "anchor", "rotation"}),
     "boot": _ULID,
-    "ts": re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z"),
+    "ts": _regex(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}Z"),
     "request_id": _ULID,
-    "actor": re.compile(r"spiffe://[a-z0-9.-]{1,64}/[a-z0-9/_.-]{1,128}"),
+    "actor": _regex(r"spiffe://[a-z0-9.-]{1,64}/[a-z0-9/_.-]{1,128}"),
     "app": _ID,
     "template_hash": _SHA256,
-    "model_id": re.compile(r"[A-Za-z0-9._:-]{1,64}"),
+    "model_id": _regex(r"[A-Za-z0-9._:-]{1,64}"),
     "policy_hash": _SHA256,
     "input_ref": _SHA256,
     "cart_hash": _SHA256,
     "oracle": frozenset({"match", "mismatch", "unavailable", "timeout", "not_consulted"}),
     "oracle_ref": _SHA256,
     "decision": frozenset({"approve", "reject"}),
-    "reason": re.compile(r"R_[A-Z0-9_]{1,40}"),
+    "reason": _regex(r"R_[A-Z0-9_]{1,40}"),
     "canary": frozenset({"pass", "fail", "not_run"}),
     "kid": _ID,
     "prev": _SHA256,
-    "sig": re.compile(r"ed25519:[A-Za-z0-9+/]{86}=="),
+    "sig": _regex(r"ed25519:[A-Za-z0-9+/]{86}=="),
 }
 """SPEC §3.1, one entry per string field. Deleting an entry opens a text channel (I8)."""
 
@@ -80,8 +85,9 @@ INT_FIELDS: frozenset[str] = frozenset({"v", "seq", "mono", "reason_v", "since_h
 
 _INT_LIMIT = 2**53
 
-_FIXED_BY_TYPE: dict[str, dict[str, str]] = {
-    "boot": {"decision": "reject", "oracle": "not_consulted", "app": "gate"},
+_FIXED_BY_TYPE: dict[str, dict[str, str | int]] = {
+    "decision": {"since_hb": 0},
+    "boot": {"decision": "reject", "oracle": "not_consulted", "app": "gate", "since_hb": 0},
     "heartbeat": {
         "decision": "reject",
         "oracle": "not_consulted",
@@ -95,6 +101,7 @@ _FIXED_BY_TYPE: dict[str, dict[str, str]] = {
         "oracle": "not_consulted",
         "app": "gate",
         "reason": "R_ANCHOR",
+        "since_hb": 0,
     },
     "rotation": {
         "decision": "reject",
@@ -102,9 +109,10 @@ _FIXED_BY_TYPE: dict[str, dict[str, str]] = {
         "app": "gate",
         "reason": "R_KEY_ROTATION",
         "oracle_ref": ZERO_HASH,
+        "since_hb": 0,
     },
 }
-"""SPEC §3.4 values that one record fixes by its `type`. `decision` records fix nothing."""
+"""SPEC §3.1 and §3.4 values that one record fixes by its `type`. Heartbeats carry `since_hb`."""
 
 _BOOT_REASONS = frozenset({"R_BOOT", "R_BOOT_TRUNCATED"})
 
@@ -144,10 +152,11 @@ class Record:
         _validate_strings(self)
         _validate_integers(self)
         _validate_type_rules(self)
-        _validate_genesis(self)
+        _validate_genesis_shape(self)
+        _validate_genesis_prev(self)
 
     def __init_subclass__(cls, **kwargs: object) -> NoReturn:
-        """Refuse subclasses, so no subclass can relax a rule."""
+        """Refuse every subclass; there is no opt-in, so no subclass can relax a rule."""
         raise TypeError("Record is final")
 
     def __reduce__(self) -> NoReturn:
@@ -202,20 +211,23 @@ def _validate_integers(record: Record) -> None:
 
 def _validate_type_rules(record: Record) -> None:
     """Apply the SPEC §3.4 fixed values for the record's `type`. Does not check genesis."""
-    for name, want in _FIXED_BY_TYPE.get(record.type, {}).items():
+    for name, want in _FIXED_BY_TYPE[record.type].items():
         if getattr(record, name) != want:
             raise SchemaError(f"{name}: a {record.type} record fixes this value")
     if record.type == "boot" and record.reason not in _BOOT_REASONS:
         raise SchemaError("reason: a boot record carries R_BOOT or R_BOOT_TRUNCATED")
 
 
-def _validate_genesis(record: Record) -> None:
-    """Zero-hash `prev` exactly at `seq == 0`, which is a `boot` with zero-hash `cart_hash`."""
-    if record.seq == 0:
-        if record.type != "boot" or record.prev != ZERO_HASH or record.cart_hash != ZERO_HASH:
-            raise ChainError("seq 0 must be a boot record with zero-hash prev and cart_hash")
-    elif record.prev == ZERO_HASH:
-        raise ChainError("zero-hash prev outside genesis")
+def _validate_genesis_shape(record: Record) -> None:
+    """`seq == 0` is a `boot` with zero-hash `cart_hash` (SPEC §3.4, check 2). Ignores `prev`."""
+    if record.seq == 0 and (record.type != "boot" or record.cart_hash != ZERO_HASH):
+        raise SchemaError("seq 0 must be a boot record with zero-hash cart_hash")
+
+
+def _validate_genesis_prev(record: Record) -> None:
+    """Zero-hash `prev` exactly at `seq == 0` (SPEC §3.6, check 4). Does not hash a neighbour."""
+    if (record.prev == ZERO_HASH) != (record.seq == 0):
+        raise ChainError("zero-hash prev exactly at seq 0")
 
 
 def parse_line(line: bytes) -> dict[str, Any]:
@@ -223,7 +235,9 @@ def parse_line(line: bytes) -> dict[str, Any]:
 
     Rejects any byte outside printable ASCII (so BOM, CRLF, newline, and non-ASCII), duplicate
     keys, floats, exponents, `-0`, `NaN`/`Infinity`, non-object top levels, and any
-    byte-level difference from canonical form. Does not check the field set.
+    byte-level difference from canonical form. Negative integers, escaped control characters,
+    and nested values round-trip and are left to the schema (check 2), as in the Go reference.
+    Does not check the field set.
     """
     _require_printable_ascii(line)
     try:
@@ -231,7 +245,7 @@ def parse_line(line: bytes) -> dict[str, Any]:
             line.decode("ascii"),
             object_pairs_hook=_pairs_without_duplicates,
             parse_float=_refuse_number,
-            parse_int=_non_negative_int,
+            parse_int=_integer_literal,
             parse_constant=_refuse_number,
         )
     except (json.JSONDecodeError, RecursionError) as e:
@@ -246,13 +260,17 @@ def parse_line(line: bytes) -> dict[str, Any]:
 def canonical_bytes(obj: dict[str, Any]) -> bytes:
     """RFC 8785 (JCS) bytes of `obj` for the record alphabet.
 
-    Every string is required to be printable ASCII and every number an `int`, which is
-    the alphabet SPEC §3.1 permits; within it, JCS is exactly compact JSON with keys
-    sorted by code point. Raises `ParseError` on anything outside that alphabet rather
-    than guessing at JCS number or escape formatting. Does not append a newline.
+    The alphabet is: string keys and values of chars `0x00..0x7e` only, integers a double holds
+    exactly and below 10^21, `true`, `false`, `null`, lists and objects. Within it, JCS is exactly
+    compact JSON with keys sorted by code point and the escapes the standard library writes.
+    Raises `ParseError` on anything outside it (non-ASCII, DEL, floats, other ints, tuples)
+    rather than guessing at JCS number or escape formatting. Does not append a newline.
     """
     _require_canonical_alphabet(obj)
-    text = json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    try:
+        text = json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    except RecursionError as e:
+        raise ParseError("nested too deeply to serialize") from e
     return text.encode("ascii")
 
 
@@ -262,20 +280,41 @@ def _require_printable_ascii(line: bytes) -> None:
         raise ParseError("line has a byte outside printable ASCII, or is empty")
 
 
-def _require_canonical_alphabet(value: object) -> None:
-    """Raise `ParseError` on a float, or a string with a char outside `0x20..0x7e`, anywhere."""
-    if isinstance(value, dict):
-        for k, v in value.items():
-            _require_canonical_alphabet(k)
-            _require_canonical_alphabet(v)
-    elif isinstance(value, list):
-        for v in value:
-            _require_canonical_alphabet(v)
-    elif isinstance(value, str):
-        if any(c < " " or c > "~" for c in value):
-            raise ParseError("string has a char outside printable ASCII")
-    elif type(value) is float:
-        raise ParseError("floats are not in the canonical alphabet")
+_INT_PRINTED_IN_FULL = 10**21
+"""JCS (ES6 number formatting) prints an integer as plain digits only below this."""
+
+
+def _is_canonical_int(n: int) -> bool:
+    """Return whether JCS prints `n` verbatim: a double holds it exactly and |n| < 10^21."""
+    return abs(n) < _INT_PRINTED_IN_FULL and int(float(n)) == n
+
+
+def _require_canonical_alphabet(obj: object) -> None:
+    """Raise `ParseError` on any value outside the `canonical_bytes` alphabet, at any depth.
+
+    Walks with an explicit stack, so depth cannot raise `RecursionError` here.
+    """
+    stack: list[object] = [obj]
+    while stack:
+        value = stack.pop()
+        if isinstance(value, dict):
+            for k, v in value.items():
+                if type(k) is not str:
+                    raise ParseError("object key is not a string")
+                stack.append(k)
+                stack.append(v)
+        elif isinstance(value, list):
+            stack.extend(value)
+        elif isinstance(value, str):
+            if any(c > "~" for c in value):
+                raise ParseError("string has a char outside ASCII 0x00..0x7e")
+        elif value is None or isinstance(value, bool):
+            continue
+        elif type(value) is int:
+            if not _is_canonical_int(value):
+                raise ParseError("integer is not printed verbatim by JCS")
+        else:
+            raise ParseError(f"{type(value).__name__} is not in the canonical alphabet")
 
 
 def _pairs_without_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -286,11 +325,17 @@ def _pairs_without_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return obj
 
 
-def _non_negative_int(text: str) -> int:
-    """Parse an integer literal; `-0` and every other negative literal is a `ParseError`."""
-    if text.startswith("-"):
-        raise ParseError("negative integer literal")
-    return int(text)
+def _integer_literal(text: str) -> int:
+    """Parse an integer literal; `-0` (JCS writes `0`) and one too long to convert are `ParseError`.
+
+    Other negatives parse, so that range is the schema's finding (check 2), as in the reference.
+    """
+    if text == "-0":
+        raise ParseError("-0 is not canonical")
+    try:
+        return int(text)
+    except ValueError as e:
+        raise ParseError("integer literal too long to convert") from e
 
 
 def _refuse_number(text: str) -> NoReturn:

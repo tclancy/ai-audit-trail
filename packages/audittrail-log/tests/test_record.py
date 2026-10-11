@@ -132,14 +132,16 @@ def test_bad_integers_are_rejected(vectors_dir: Path, field: str, value: object)
 
 
 def test_genesis_requires_seq_zero_boot_and_zero_prev(vectors_dir: Path) -> None:
-    """`prev` is the zero-hash exactly at `seq == 0`, and `seq == 0` is a `boot`."""
+    """`prev` is the zero-hash exactly at `seq == 0` (check 4); `seq == 0` is a `boot` (check 2)."""
     boot = genesis_boot(vectors_dir)
     with pytest.raises(ChainError):
         dataclasses.replace(boot, prev="sha256:" + "a" * 64)
     with pytest.raises(ChainError):
         dataclasses.replace(boot, seq=1)
-    with pytest.raises(ChainError):
+    with pytest.raises(SchemaError):
         dataclasses.replace(boot, type="decision")
+    with pytest.raises(SchemaError):
+        dataclasses.replace(boot, cart_hash="sha256:" + "a" * 64)
 
 
 # --- parser edge cases not covered by a vector ---------------------------
@@ -162,17 +164,44 @@ def test_parse_error_carries_check_one_and_schema_error_check_two() -> None:
     assert ChainError.check == 4
 
 
-def test_canonical_bytes_refuses_non_ascii_and_floats() -> None:
-    """The canonical alphabet is printable ASCII and integers; nothing else serializes."""
+@pytest.mark.parametrize(
+    "obj",
+    [
+        {"a": "é"},
+        {"a": "\ud800"},
+        {"a": "\x7f"},
+        {"a": 1.0},
+        {"a": 2**53 + 1},
+        {"a": 10**21},
+        {"a": -(10**21)},
+        {"a": (1,)},
+        {"a": b"x"},
+        {1: 2},
+        {"a": [1, 2.5]},
+    ],
+)
+def test_canonical_bytes_refuses_values_outside_the_alphabet(obj: dict[Any, Any]) -> None:
+    """Non-ASCII, DEL, floats, ints JCS would reformat, tuples, bytes, non-str keys all raise."""
     with pytest.raises(ParseError):
-        canonical_bytes({"a": "é"})
-    with pytest.raises(ParseError):
-        canonical_bytes({"a": "\ud800"})
-    with pytest.raises(ParseError):
-        canonical_bytes({"a": 1.0})
-    with pytest.raises(ParseError):
-        canonical_bytes({"a": "tab\there"})
-    assert canonical_bytes({"b": 1, "a": "x"}) == b'{"a":"x","b":1}'
+        canonical_bytes(obj)
+
+
+@pytest.mark.parametrize(
+    ("obj", "want"),
+    [
+        ({"b": 1, "a": "x"}, b'{"a":"x","b":1}'),
+        ({"a": "tab\there\n"}, b'{"a":"tab\\there\\n"}'),
+        ({"a": "\x00\x1f"}, b'{"a":"\\u0000\\u001f"}'),
+        ({"a": 'q"b\\'}, b'{"a":"q\\"b\\\\"}'),
+        ({"a": -1}, b'{"a":-1}'),
+        ({"a": 2**53}, b'{"a":9007199254740992}'),
+        ({"a": 2**60}, b'{"a":1152921504606846976}'),
+        ({"a": [1, "x", None, True]}, b'{"a":[1,"x",null,true]}'),
+    ],
+)
+def test_canonical_bytes_matches_jcs_inside_the_alphabet(obj: dict[str, Any], want: bytes) -> None:
+    """Escapes, sorting, negatives, 2^53, and nested values serialize exactly as JCS does."""
+    assert canonical_bytes(obj) == want
 
 
 def test_zero_hash_constant() -> None:
@@ -224,3 +253,162 @@ def test_schema_version_must_be_one(vectors_dir: Path) -> None:
     """`v == 2` is a different wire format, not a newer record."""
     with pytest.raises(SchemaError):
         dataclasses.replace(genesis_boot(vectors_dir), v=2)
+
+
+# --- review findings: crashes, check-number policy, ASCII regexes ---------------
+
+
+def genesis_line(vectors_dir: Path) -> bytes:
+    """The genesis line of the `genesis-boot` vector, as bytes without the newline."""
+    return log_lines(vectors_dir / "positive" / "genesis-boot")[0]
+
+
+@pytest.mark.parametrize(
+    ("edit", "check"),
+    [
+        ((b'"mono":0,', b'"mono":' + b"9" * 4301 + b","), 1),
+        ((b'"mono":0,', b'"mono":' + b"9" * 400 + b","), 1),
+        ((b'"mono":0,', b'"mono":9007199254740993,'), 1),
+        ((b'"mono":0,', b'"mono":9007199254740992,'), 2),
+        ((b'"mono":0,', b'"mono":-1,'), 2),
+        ((b'"mono":0,', b'"mono":-0,'), 1),
+        ((b'"mono":0,', b'"mono":' + b"[" * 1000 + b"]" * 1000 + b","), 2),
+        ((b'"mono":0,', b'"mono":' + b"[" * 5000 + b"]" * 5000 + b","), 2),
+        ((b'"mono":0,', b'"mono":' + b"[" * 100000 + b"]" * 100000 + b","), 1),
+        ((b'"mono":0,', b'"mono":[[1]],'), 2),
+        ((b'"mono":0,', b'"mono":{"a":{"b":1}},'), 2),
+        ((b'"model_id":"test-model-1"', b'"model_id":"test\\nmodel"'), 2),
+        ((b'"model_id":"test-model-1"', b'"model_id":"test\\u0000model"'), 2),
+        ((b'"model_id":"test-model-1"', b'"model_id":"test\\u00e9model"'), 1),
+        ((b'"model_id":"test-model-1"', b'"model_id":"test\\u007fmodel"'), 1),
+        ((b'"model_id":"test-model-1"', b'"model_id":"t\\u0065st-model-1"'), 1),
+        ((b'"model_id":"test-model-1"', b'"model_id":"test\\/model"'), 1),
+    ],
+)
+def test_hostile_lines_raise_only_record_errors_at_the_reference_check(
+    vectors_dir: Path, edit: tuple[bytes, bytes], check: int
+) -> None:
+    """Each edit of the genesis line fails with a `RecordError` at the Go reference's check number.
+
+    `pytest.raises(RecordError)` fails on a bare `ValueError` or `RecursionError`.
+    """
+    line = genesis_line(vectors_dir).replace(*edit)
+    assert line != genesis_line(vectors_dir)
+    with pytest.raises(RecordError) as e:
+        Record.from_line(line)
+    assert e.value.check == check
+
+
+def test_every_regex_is_ascii_only(vectors_dir: Path) -> None:
+    """Every pattern is compiled with `re.ASCII`, and a non-ASCII digit in `ts` is check 2."""
+    for name, rule in STRING_RULES.items():
+        if isinstance(rule, re.Pattern):
+            assert rule.flags & re.ASCII, name
+    with pytest.raises(SchemaError):
+        dataclasses.replace(genesis_boot(vectors_dir), ts="٢٠٢٦-01-01T00:00:00.000Z")
+
+
+# SPEC §3.1 and §3.4, written here by hand so the table in record.py cannot pin itself.
+FIXED_BY_TYPE: list[tuple[str, str, str | int]] = [
+    ("decision", "since_hb", 1),
+    ("boot", "decision", "approve"),
+    ("boot", "oracle", "match"),
+    ("boot", "app", "other-app"),
+    ("boot", "reason", "R_PARSE"),
+    ("boot", "since_hb", 1),
+    ("heartbeat", "decision", "approve"),
+    ("heartbeat", "oracle", "match"),
+    ("heartbeat", "app", "other-app"),
+    ("heartbeat", "reason", "R_PARSE"),
+    ("heartbeat", "cart_hash", "sha256:" + "a" * 64),
+    ("heartbeat", "oracle_ref", "sha256:" + "a" * 64),
+    ("anchor", "decision", "approve"),
+    ("anchor", "oracle", "match"),
+    ("anchor", "app", "other-app"),
+    ("anchor", "reason", "R_PARSE"),
+    ("anchor", "since_hb", 1),
+    ("rotation", "decision", "approve"),
+    ("rotation", "oracle", "match"),
+    ("rotation", "app", "other-app"),
+    ("rotation", "reason", "R_PARSE"),
+    ("rotation", "oracle_ref", "sha256:" + "a" * 64),
+    ("rotation", "since_hb", 1),
+]
+
+
+def records_of_type(vectors_dir: Path, record_type: str) -> list[Record]:
+    """Every record of `record_type` across the positive vectors; fails if there are none."""
+    found = [
+        Record.from_line(line)
+        for vector in vector_dirs(vectors_dir, "positive")
+        for line in log_lines(vector)
+        if Record.from_line(line).type == record_type
+    ]
+    assert found, record_type
+    return found
+
+
+@pytest.mark.parametrize(("record_type", "field", "bad"), FIXED_BY_TYPE)
+def test_each_fixed_value_is_enforced_per_type(
+    vectors_dir: Path, record_type: str, field: str, bad: str | int
+) -> None:
+    """Changing a fixed field to another rule-valid value is a `SchemaError` on every record."""
+    for record in records_of_type(vectors_dir, record_type):
+        change: dict[str, Any] = {field: bad}
+        with pytest.raises(SchemaError):
+            dataclasses.replace(record, **change)
+
+
+# One near miss per regex: shaped right, one character over, under, or outside the class.
+NEAR_MISSES: list[tuple[str, str]] = [
+    ("log_id", "a" * 33),
+    ("log_id", "A"),
+    ("boot", "01JAB00000000000000000000"),
+    ("boot", "01JAB0000000000000000000000"),
+    ("boot", "01JAB00000000000000000000I"),
+    ("ts", "2026-10-10T00:00:00Z"),
+    ("ts", "2026-10-10T00:00:00.0000Z"),
+    ("ts", "2026-10-10 00:00:00.000Z"),
+    ("request_id", "01JAR00000000000000000000"),
+    ("actor", "spiffe://test.local"),
+    ("actor", "spiffe://Test.local/gate"),
+    ("actor", "spiffe://" + "a" * 65 + "/gate"),
+    ("actor", "spiffe://a/" + "b" * 129),
+    ("app", "a" * 33),
+    ("template_hash", "sha256:" + "a" * 63),
+    ("template_hash", "sha256:" + "A" * 64),
+    ("model_id", "a" * 65),
+    ("model_id", "a/b"),
+    ("policy_hash", "sha256:" + "a" * 65),
+    ("input_ref", "sha512:" + "a" * 64),
+    ("cart_hash", "sha256:" + "g" * 64),
+    ("oracle_ref", "sha256:" + "a" * 64 + " "),
+    ("reason", "R_"),
+    ("reason", "R_" + "A" * 41),
+    ("reason", "r_x"),
+    ("reason", "R_a"),
+    ("kid", "a" * 33),
+    ("kid", "a_b"),
+    ("prev", "sha256:" + "A" * 64),
+    ("sig", "ed25519:" + "A" * 86 + "="),
+    ("sig", "ed25519:" + "A" * 87 + "=="),
+    ("sig", "ed25519:" + "A" * 85 + "-=="),
+    ("type", "Boot"),
+    ("oracle", "MATCH"),
+    ("decision", "approved"),
+    ("canary", "passed"),
+]
+
+
+@pytest.mark.parametrize(("field", "bad"), NEAR_MISSES)
+def test_near_miss_values_are_rejected_per_field(vectors_dir: Path, field: str, bad: str) -> None:
+    """Each regex and enum rejects a value one step outside it; no field has a looser rule."""
+    change: dict[str, Any] = {field: bad}
+    with pytest.raises(SchemaError):
+        dataclasses.replace(genesis_boot(vectors_dir), **change)
+
+
+def test_field_rules_cover_every_regex_field() -> None:
+    """NEAR_MISSES and FIXED_BY_TYPE together name every string field at least once."""
+    named = {f for f, _ in NEAR_MISSES} | {f for _, f, _ in FIXED_BY_TYPE}
+    assert set(STRING_RULES) <= named
