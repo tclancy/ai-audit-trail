@@ -1,3 +1,8 @@
+# `make hooks` runs `pre-commit install`, which installs every hook type listed here.
+default_install_hook_types: [pre-commit, commit-msg]
+# Hooks without their own `stages` run at commit and at push (the pre-push gate is
+# installed per machine), and not again at the commit-msg stage.
+default_stages: [pre-commit, pre-push]
 repos:
   - repo: https://github.com/gitleaks/gitleaks
     rev: v8.21.2
@@ -10,9 +15,15 @@ repos:
       - id: ruff-format
   - repo: local
     hooks:
-      - id: denylist
-        name: local denylist (never committed)
-        entry: tools/denylist-check.sh
+      - id: denylist-staged
+        name: local denylist over the staged diff (never committed)
+        entry: tools/denylist-check.sh --staged
         language: script
-        stages: [pre-commit, commit-msg]
+        stages: [pre-commit]
+        pass_filenames: false
         always_run: true
+      - id: denylist-commit-msg
+        name: local denylist over the commit message (never committed)
+        entry: tools/denylist-check.sh --commit-msg
+        language: script
+        stages: [commit-msg]

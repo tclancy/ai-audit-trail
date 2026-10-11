@@ -1,6 +1,27 @@
-.PHONY: check lint types docs test mutations grep skeleton demo vectors
+.PHONY: check hooks hooks-installed pr lint types docs test mutations grep skeleton demo vectors
 
-check: lint types docs test grep mutations
+check: hooks-installed lint types docs test grep mutations
+
+hooks:   # installs every hook type named in .pre-commit-config.yaml (default_install_hook_types)
+	pre-commit install
+
+# The hooks are the only thing that runs the local denylist, so a checkout without
+# them is unchecked. Fails until `make hooks` has been run and .denylist.local
+# exists with at least one pattern (the --staged scan proves both).
+hooks-installed:
+	@for h in pre-commit commit-msg; do \
+	  grep -qs 'pre-commit' "$$(git rev-parse --git-path hooks)/$$h" \
+	    || { echo "hooks: $$h hook not installed; run: make hooks"; exit 1; }; \
+	done
+	@tools/denylist-check.sh --staged
+
+# The PR title, the branch name and the body go through the local denylist before
+# gh sees any of them.
+pr:   # make pr TITLE='...' BODY=path/to/body.md
+	@[ -n "$(TITLE)" ] && [ -n "$(BODY)" ] || { echo "usage: make pr TITLE='...' BODY=path/to/body.md"; exit 1; }
+	@t=$$(mktemp -t pr-title-and-branch); printf '%s\n%s\n' "$(TITLE)" "$$(git branch --show-current)" > "$$t"; \
+	  tools/denylist-check.sh "$$t" "$(BODY)"; rc=$$?; rm -f "$$t"; exit $$rc
+	gh pr create --title "$(TITLE)" --body-file "$(BODY)"
 
 lint:
 	ruff check . && ruff format --check .
