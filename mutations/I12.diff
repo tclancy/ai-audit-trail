@@ -1,0 +1,13 @@
+diff --git a/packages/audittrail-log/src/audittrail/signing.py b/packages/audittrail-log/src/audittrail/signing.py
+index 4c7c232..9c6a661 100644
+--- a/packages/audittrail-log/src/audittrail/signing.py
++++ b/packages/audittrail-log/src/audittrail/signing.py
+@@ -59,8 +59,6 @@ class SoftwareSigner:
+ 
+     def __init__(self, kid: str, seed: bytes) -> None:
+         """Build the key from a 32-byte seed. Does not read the seed from anywhere itself."""
+-        if os.environ.get(_DEV_FLAG) != "1":
+-            raise RuntimeError(f"SoftwareSigner is for development only; {_DEV_FLAG}=1 is not set")
+         rule = STRING_RULES["kid"]
+         if isinstance(rule, frozenset) or type(kid) is not str or rule.fullmatch(kid) is None:
+             raise SchemaError("kid: value does not match its rule")
