@@ -218,3 +218,9 @@ def test_canonical_bytes_walks_lists() -> None:
     with pytest.raises(ParseError):
         canonical_bytes({"a": [1, 2.5]})
     assert canonical_bytes({"a": [1, "x"]}) == b'{"a":[1,"x"]}'
+
+
+def test_schema_version_must_be_one(vectors_dir: Path) -> None:
+    """`v == 2` is a different wire format, not a newer record."""
+    with pytest.raises(SchemaError):
+        dataclasses.replace(genesis_boot(vectors_dir), v=2)
