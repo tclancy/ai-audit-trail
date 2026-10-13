@@ -8,17 +8,26 @@ on:
 permissions:
   contents: read
 
+# Every Python job installs from uv.lock with `uv sync --locked`, which refuses a
+# lockfile that no longer matches pyproject.toml (`--frozen` would silently
+# install the stale lock). The venv's bin goes first on PATH so the `make`
+# targets run exactly as they do locally.
+env:
+  UV_VERSION: "0.8.13"
+
 jobs:
   lint-types-docs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: astral-sh/setup-uv@v5.4.2
         with:
-          python-version: "3.12"
-      - run: pip install -r requirements-dev.txt
-      # The packages' declared dependencies must be present before mypy runs.
-      - run: pip install -e packages/audittrail-verify -e packages/audittrail-log -e packages/audittrail-testkit
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+      # The dev group holds the pinned tools and the three workspace packages (editable),
+      # so the packages' declared dependencies are present before mypy runs.
+      - run: uv sync --locked
+      - run: echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
       # Same targets as `make check`, so CI and local runs cannot drift apart.
       - run: make lint
       - run: make types
@@ -29,10 +38,11 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: astral-sh/setup-uv@v5.4.2
         with:
-          python-version: "3.12"
-      - run: pip install check-jsonschema==0.29.4
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+      - run: uv tool install check-jsonschema==0.29.4
       - name: manifest
         run: cd spec && sha256sum -c vectors.sha256
       - name: positive vectors validate line by line
@@ -89,11 +99,12 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: astral-sh/setup-uv@v5.4.2
         with:
-          python-version: "3.12"
-      - run: pip install -r requirements-dev.txt
-      - run: pip install -e packages/audittrail-verify -e packages/audittrail-log -e packages/audittrail-testkit
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+      - run: uv sync --locked
+      - run: echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
       - run: pytest -q --cov=audittrail --cov=audittrail_verify --cov-fail-under=90
       - name: grep tests (bypass tokens, key material, text channels)
         run: python tools/grep_tests.py
@@ -102,15 +113,19 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: astral-sh/setup-uv@v5.4.2
         with:
-          python-version: "3.12"
-      - run: pip install build && python -m build packages/audittrail-verify
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+      - run: uv build packages/audittrail-verify --out-dir /tmp/dist
+      # The wheel plus pytest and nothing else: the workspace is never synced into
+      # this venv, so the verifier runs with only its declared dependencies.
       - name: install wheel into a clean venv and test against spec/ only
         run: |
-          python -m venv /tmp/v && . /tmp/v/bin/activate
-          pip install packages/audittrail-verify/dist/*.whl pytest
-          pytest -q packages/audittrail-verify/tests
+          uv venv /tmp/v
+          uv pip install --python /tmp/v/bin/python /tmp/dist/*.whl pytest==8.3.3
+          uv pip list --python /tmp/v/bin/python
+          /tmp/v/bin/pytest -q packages/audittrail-verify/tests
       - name: no audittrail import anywhere in the verifier
         run: |
           if grep -rnE '(from|import) audittrail(\.|\s|$)' packages/audittrail-verify/src; then
@@ -120,11 +135,12 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: astral-sh/setup-uv@v5.4.2
         with:
-          python-version: "3.12"
-      - run: pip install -r requirements-dev.txt
-      - run: pip install -e packages/audittrail-verify -e packages/audittrail-log
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+      - run: uv sync --locked
+      - run: echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
       # Checks each diff applies (I15) and turns the suite red; passes with no diffs (M0).
       - run: make mutations
 
