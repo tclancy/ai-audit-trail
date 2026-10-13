@@ -627,6 +627,11 @@ def test_keyring_load_requires_one_canonical_line_with_newline(tmp_path: Path) -
         key_bytes(alg="rsa"),
         key_bytes(kid="Gate Test 1"),
         key_bytes(kid="sink-test-1"),
+        key_bytes(pub="84FibkHnAn6kMb/jAJ6UvdJadGvuxGiUjWw8fF3JpUs="),
+        keyring_bytes(
+            keys=parse_object(keyring_bytes())["keys"]
+            + [{**parse_object(keyring_bytes())["keys"][0], "kid": "gate-test-1b"}]
+        ),
         key_bytes(role="admin"),
         key_bytes(role=["gate"]),
         key_bytes(role={"gate": 1}),
@@ -665,6 +670,19 @@ def test_keyring_rejects_every_malformed_file(data: bytes) -> None:
     """Each variant differs from a valid keyring in exactly one rule and is refused."""
     with pytest.raises(KeyringError):
         Keyring.from_bytes(data)
+
+
+def test_a_retired_key_cannot_sign_on_under_an_alias(
+    rotation_keyring: Keyring, clock: None, dev: None
+) -> None:
+    """The alias keyring that would let gate-test-1 outlive its retirement does not load (#19)."""
+    obj = parse_object((VECTORS / "positive" / "rotation" / "keyring.json").read_bytes()[:-1])
+    alias = {**obj["keys"][0], "kid": "gate-test-1b", "valid_to_seq": None}
+    with pytest.raises(KeyringError):
+        Keyring.from_bytes(canonical_bytes({**obj, "keys": [*obj["keys"], alias]}))
+    line = resigned(vector_lines("positive/rotation")[1], kid="gate-test-1b")
+    with pytest.raises(GateError):
+        from_wire(line, rotation_keyring)
 
 
 def test_keyring_from_bytes_refuses_non_bytes_and_is_final() -> None:

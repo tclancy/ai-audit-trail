@@ -167,7 +167,7 @@ JCS object, owned by the verifier side, never writable by the gate's identity:
 {"keys":[{"alg":"ed25519","kid":"gate-2026q4","pub":"<base64 32 bytes>","role":"gate","valid_from_seq":0,"valid_to_seq":null}, {"alg":"ed25519","kid":"sink-minio-1","pub":"…","role":"sink",…}],"log_id":"ingest-prod","v":1}
 ```
 
-A `kid` verifies only records whose `seq` lies in its window. A `rotation` record at `seq = k` signed by the old key sets the old key's `valid_to_seq = k` and the new key's `valid_from_seq = k+1`; the keyring must agree or verification fails. Consumers refuse receipts whose `kid` is retired (see §6).
+A `kid` verifies only records whose `seq` lies in its window. A `rotation` record at `seq = k` signed by the old key sets the old key's `valid_to_seq = k` and the new key's `valid_from_seq = k+1`; the keyring must agree or verification fails. Consumers refuse receipts whose `kid` is retired (see §6). Every `pub` appears at most once in a keyring: a key is identified by its public bytes and `kid` is its name in records, so a keyring that lists one `pub` under two kids is invalid, because retiring one of the names would not retire the key (issue #19).
 
 ## 4. Library API (`audittrail-log`)
 

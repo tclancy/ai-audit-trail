@@ -99,8 +99,9 @@ class Keyring:
         Raises `KeyringError` on anything that is not exactly SPEC §3.8: non-canonical bytes,
         any other field set, `v != 1`, an `alg` other than `ed25519`, a `pub` that is not the
         standard base64 of 32 bytes, a role outside `ROLES`, a window outside `[0, 2^53)` or
-        with `valid_from_seq > valid_to_seq`, a repeated `kid`, or no keys at all. Does not
-        check that the file is readable by the gate's identity; that is deployment's job.
+        with `valid_from_seq > valid_to_seq`, a repeated `kid`, a repeated `pub` under another
+        kid (retiring one name would not retire the key, issue #19), or no keys at all. Does
+        not check that the file is readable by the gate's identity; that is deployment's job.
         """
         if type(line) is not bytes:
             raise KeyringError("keyring is not bytes")
@@ -117,11 +118,15 @@ class Keyring:
         if type(obj["keys"]) is not list or not obj["keys"]:
             raise KeyringError("keyring keys is not a non-empty list")
         keys: dict[str, Key] = {}
+        pubs: set[bytes] = set()
         for entry in obj["keys"]:
             key = _parse_key(entry)
             if key.kid in keys:
                 raise KeyringError("keyring repeats a kid")
+            if key.pub.public_bytes_raw() in pubs:
+                raise KeyringError("keyring lists one pub under two kids")
             keys[key.kid] = key
+            pubs.add(key.pub.public_bytes_raw())
         self = object.__new__(cls)
         object.__setattr__(self, "_keys", keys)
         object.__setattr__(self, "_log_id", log_id)
