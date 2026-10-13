@@ -38,7 +38,7 @@ class Candidate(Protocol):
     """
 
     def canonical_bytes(self) -> bytes:
-        """Return the JCS bytes the gate hashed into `cart_hash`."""
+        """Return the JCS bytes the gate hashed into `cart_hash`. `audittrail` never parses them."""
         ...
 
 
@@ -67,7 +67,7 @@ class InMemorySeenStore:
         raise TypeError("InMemorySeenStore is final")
 
     def first_use(self, request_id: str) -> bool:
-        """Record `request_id` under a lock; the first caller for an id gets True, others False."""
+        """Record `request_id` under a lock; first caller gets True, others False. Not durable."""
         validate_string_field("request_id", request_id)
         with self._lock:
             if request_id in self._seen:
@@ -161,7 +161,7 @@ def _check_parameters(
 
 
 def _rule_1_canonical_approve(line: bytes) -> Record:
-    """Parse the line strictly and require a `decision` record that approves."""
+    """Parse the line strictly and require a `decision` record that approves. Checks no key."""
     try:
         record = Record.from_line(line)
     except RecordError as e:
@@ -174,7 +174,11 @@ def _rule_1_canonical_approve(line: bytes) -> Record:
 
 
 def _rule_2_signed_by_current_gate_key(record: Record, keyring: Keyring) -> None:
-    """Signature under the gate key for `kid` within its window, and the key is not retired."""
+    """Signature under the gate key for `kid` within its window, and the key is not retired.
+
+    Applies no grace to a retired key (I14, M2). A record from another log than the keyring's
+    is refused here, before rule 3 compares either with the consumer's own `log_id`.
+    """
     try:
         keyring.check_record_signature(record)
         if keyring.retired(record.kid):
@@ -184,19 +188,19 @@ def _rule_2_signed_by_current_gate_key(record: Record, keyring: Keyring) -> None
 
 
 def _rule_3_this_log(record: Record, keyring: Keyring, log_id: str) -> None:
-    """Require the record and the keyring to name the consumer's configured log."""
+    """Require the record and the keyring to name the consumer's configured log. Nothing else."""
     if record.log_id != log_id or keyring.log_id != log_id:
         raise GateError("rule 3: not this log")
 
 
 def _rule_4_this_app(record: Record, app: str) -> None:
-    """Require the record to name the app the consumer acts for."""
+    """Require the record to name the app the consumer acts for. Does not check `actor`."""
     if record.app != app:
         raise GateError("rule 4: not this app")
 
 
 def _rule_5_bound_to_candidate(record: Record, candidate: Candidate) -> None:
-    """`cart_hash` equals the sha256 of the Candidate's canonical bytes."""
+    """`cart_hash` equals the sha256 of the Candidate's canonical bytes. Never reads the bytes."""
     data = candidate.canonical_bytes()
     if type(data) is not bytes:
         raise TypeError("candidate.canonical_bytes(): not bytes")
@@ -206,18 +210,29 @@ def _rule_5_bound_to_candidate(record: Record, candidate: Candidate) -> None:
 
 
 def _rule_6_fresh(record: Record, max_age_s: int) -> None:
-    """`now - ts <= max_age_s`. A `ts` that is no calendar date is refused."""
+    """`now - ts <= max_age_s`, compared in whole milliseconds. A `ts` that is no date is refused.
+
+    Does not bound `ts` from above: a receipt dated ahead of `now` passes (issue #17).
+    """
     try:
         ts = datetime.strptime(record.ts, _TS_FORMAT).replace(tzinfo=UTC)
     except ValueError as e:
         raise GateError("rule 6: ts is not a date") from e
-    if _now() - ts > timedelta(seconds=max_age_s):
+    age_ms = (_now() - ts) // timedelta(milliseconds=1)
+    if age_ms > max_age_s * 1000:
         raise GateError("rule 6: receipt is older than max_age_s")
 
 
 def _rule_7_unseen(record: Record, seen: SeenStore) -> None:
-    """Mark `request_id` used; a second use is refused. Runs last so refusals leave no mark."""
-    if not seen.first_use(record.request_id):
+    """Mark `request_id` used; anything but a literal `True` from the store is a refusal.
+
+    Runs last so refusals leave no mark. A store that returns something other than a bool
+    is a `TypeError`; a store that raises propagates its own exception.
+    """
+    result = seen.first_use(record.request_id)
+    if type(result) is not bool:
+        raise TypeError("seen.first_use(): not a bool")
+    if result is not True:
         raise GateError("rule 7: request_id already acted on")
 
 

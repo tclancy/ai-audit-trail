@@ -27,7 +27,7 @@ from audittrail.approved import (
 )
 from audittrail.keyring import Keyring, KeyringError
 from audittrail.log import DecisionFields, Log, Receipt
-from audittrail.record import Record, SchemaError, canonical_bytes, parse_object
+from audittrail.record import ZERO_HASH, Record, SchemaError, canonical_bytes, parse_object
 from audittrail.signing import DOMAIN_RECORD, SoftwareSigner
 
 SPEC = Path(__file__).resolve().parents[3] / "spec"
@@ -63,6 +63,14 @@ class Cart:
     def canonical_bytes(self) -> bytes:
         """JCS of the synthetic cart the vectors were generated from."""
         return canonical_bytes({"account": "acct-0001", "amount": self.amount})
+
+
+class EmptyCart:
+    """A Candidate with no bytes at all."""
+
+    def canonical_bytes(self) -> bytes:
+        """Return nothing."""
+        return b""
 
 
 @pytest.fixture
@@ -295,11 +303,20 @@ def test_rule_4_rejects_another_app(approve_line: bytes, keyring: Keyring, clock
 
 
 def test_rule_5_rejects_a_candidate_with_another_hash(
-    approve_line: bytes, keyring: Keyring, clock: None
+    approve_line: bytes, keyring: Keyring, clock: None, dev: None
 ) -> None:
-    """One field off in the cart, and a cart hashing to the zero-hash's preimage, both refuse."""
+    """One field off in the cart refuses; so does a zero-hash `cart_hash`, with any candidate.
+
+    A decision record with the zero-hash in `cart_hash` is schema-valid at seq != 0, so a
+    comparison that treated the zero-hash as "unbound, so anything goes" would be a bypass.
+    """
     with pytest.raises(GateError):
         from_wire(approve_line, keyring, candidate=Cart(amount=101))
+    unbound = resigned(approve_line, cart_hash=ZERO_HASH)
+    with pytest.raises(GateError):
+        from_wire(unbound, keyring, candidate=Cart())
+    with pytest.raises(GateError):
+        from_wire(unbound, keyring, candidate=EmptyCart())
 
 
 def test_rule_5_a_candidate_whose_bytes_are_not_bytes_is_refused(
@@ -327,6 +344,7 @@ def test_rule_6_rejects_a_receipt_older_than_max_age(
     """Exactly max_age_s old passes; one millisecond more does not."""
     monkeypatch.setattr("audittrail.approved._now", lambda: APPROVE_TS.replace(minute=1, second=1))
     assert from_wire(approve_line, keyring).entry.seq == 1
+    assert from_wire(approve_line, keyring, max_age_s=2**53 - 1).entry.seq == 1
     monkeypatch.setattr(
         "audittrail.approved._now",
         lambda: APPROVE_TS.replace(minute=1, second=1, microsecond=1000),
@@ -373,6 +391,23 @@ def test_rule_7_the_store_is_asked_last(approve_line: bytes, keyring: Keyring, c
         from_wire(approve_line, keyring, seen=Exploding(), app="other-app")
     with pytest.raises(RuntimeError):
         from_wire(approve_line, keyring, seen=Exploding())
+
+
+@pytest.mark.parametrize("result", ["yes", 1, None, 0, object()])
+def test_rule_7_only_a_literal_true_from_the_store_is_first_use(
+    approve_line: bytes, keyring: Keyring, clock: None, result: object
+) -> None:
+    """A truthy string or a 1 is not True; a non-bool is a TypeError, False is a refusal."""
+
+    class Answering:
+        """A SeenStore that answers with whatever the test says."""
+
+        def first_use(self, request_id: str) -> bool:
+            """Return the canned result."""
+            return result  # type: ignore[return-value]
+
+    with pytest.raises((GateError, TypeError)):
+        from_wire(approve_line, keyring, seen=Answering())
 
 
 def test_in_memory_seen_store_is_first_use_once_across_threads() -> None:
@@ -564,6 +599,9 @@ def test_keyring_load_requires_one_canonical_line_with_newline(tmp_path: Path) -
         key_bytes(kid="Gate Test 1"),
         key_bytes(kid="sink-test-1"),
         key_bytes(role="admin"),
+        key_bytes(role=["gate"]),
+        key_bytes(role={"gate": 1}),
+        key_bytes(alg=["ed25519"]),
         key_bytes(pub="TLWr9q15+/WrvMr8wmnYXNJlHtS4hbWGnyQa7fCluik"),
         key_bytes(pub="TLWr9q15+/WrvMr8wmnYXNJlHtS4hbWGnyQa7fCluil="),
         key_bytes(pub=base64.b64encode(b"\x01" * 31).decode("ascii")),

@@ -129,7 +129,11 @@ class Keyring:
 
     @classmethod
     def load(cls, path: Path) -> Keyring:
-        """Read a keyring file: exactly one canonical line followed by one newline."""
+        """Read a keyring file: exactly one canonical line followed by one newline.
+
+        Follows symlinks and lets OS errors propagate as they are; does not check who owns
+        the file or who may write it (SPEC §3.8 says never the gate; that is deployment's job).
+        """
         data = Path(path).read_bytes()
         if not data.endswith(b"\n") or b"\n" in data[:-1]:
             raise KeyringError("keyring file is not one newline-terminated line")
@@ -137,11 +141,11 @@ class Keyring:
 
     @property
     def log_id(self) -> str:
-        """The log this keyring answers for (SPEC §3.8)."""
+        """The log this keyring answers for (SPEC §3.8). Not compared with anything here."""
         return self._log_id
 
     def retired(self, kid: str) -> bool:
-        """Return whether `kid` has a `valid_to_seq`. Raises `KeyringError` for an unknown kid."""
+        """Return whether `kid` has a `valid_to_seq`. Unknown kid is `KeyringError`; no grace."""
         return self._key(kid).valid_to_seq is not None
 
     def check_record_signature(self, record: Record) -> None:
@@ -192,7 +196,7 @@ def _signature_bytes(text: str) -> bytes:
 
 
 def _validate_field(name: str, value: object) -> None:
-    """Apply the record rule of the same name; its `SchemaError` becomes `KeyringError`."""
+    """Apply the record rule of the same name; its `SchemaError` becomes `KeyringError`. No more."""
     try:
         validate_string_field(name, value)
     except SchemaError as e:
@@ -206,7 +210,7 @@ def _parse_key(entry: object) -> Key:
     if entry["alg"] != "ed25519":
         raise KeyringError("key alg is not ed25519")
     _validate_field("kid", entry["kid"])
-    if entry["role"] not in ROLES:
+    if type(entry["role"]) is not str or entry["role"] not in ROLES:
         raise KeyringError("key role is not gate or sink")
     valid_from_seq = _seq(entry["valid_from_seq"])
     valid_to_seq = None if entry["valid_to_seq"] is None else _seq(entry["valid_to_seq"])
@@ -222,7 +226,7 @@ def _parse_key(entry: object) -> Key:
 
 
 def _seq(value: Any) -> int:
-    """Return `value` if it is a non-bool int in `[0, 2^53)`; else `KeyringError`."""
+    """Return `value` if it is a non-bool int in `[0, 2^53)`; else `KeyringError`. Ignores order."""
     if type(value) is not int or not 0 <= value < _SEQ_LIMIT:
         raise KeyringError("key window bound is not an integer in [0, 2^53)")
     return value
