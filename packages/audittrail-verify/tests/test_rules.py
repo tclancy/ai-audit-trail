@@ -287,9 +287,11 @@ def variants() -> list[tuple[str, dict[str, Any] | bytes]]:
     out: list[tuple[str, dict[str, Any] | bytes]] = []
 
     def ring(**top: Any) -> dict[str, Any]:
+        """The shared keyring with top-level fields replaced."""
         return {**ring_obj(), **top}
 
     def key(**entry: Any) -> dict[str, Any]:
+        """The shared keyring with fields of its first key replaced."""
         obj = ring_obj()
         obj["keys"][0] = {**obj["keys"][0], **entry}
         return obj
