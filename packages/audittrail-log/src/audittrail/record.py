@@ -305,6 +305,24 @@ def parse_line(line: bytes) -> dict[str, Any]:
     if type(line) is not bytes:
         raise ParseError("line is not bytes")
     _require_within_bounds(line)
+    return _parse_canonical(line)
+
+
+def parse_object(line: bytes) -> dict[str, Any]:
+    """Strictly parse one JCS object that is not a record line (SPEC §3.7: keyrings, receipts).
+
+    The same rules as `parse_line` except the record length bound, which the spec applies to
+    record lines only; the depth bound applies. Does not check any field.
+    """
+    if type(line) is not bytes:
+        raise ParseError("line is not bytes")
+    if nesting_depth(line) > MAX_NESTING_DEPTH:
+        raise ParseError("object nests deeper than the bound")
+    return _parse_canonical(line)
+
+
+def _parse_canonical(line: bytes) -> dict[str, Any]:
+    """Parse printable-ASCII strict JSON to a dict and require it to be its own canonical form."""
     _require_printable_ascii(line)
     try:
         obj = json.loads(

@@ -24,6 +24,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, NoReturn, final
 
+from audittrail.keyring import Keyring, KeyringError
 from audittrail.record import (
     MAX_LINE_BYTES,
     ZERO_HASH,
@@ -88,7 +89,7 @@ class Receipt:
     """The bytes of one written decision line and its parsed record. Final; not copyable.
 
     Proves that this writer signed and wrote the line. Does not prove inclusion to anyone
-    else; that is reconciliation's job (SPEC §6 rule 8). `verify` arrives with `Approved`.
+    else; that is reconciliation's job (SPEC §6 rule 8).
     """
 
     __slots__ = ("entry", "line")
@@ -105,6 +106,21 @@ class Receipt:
     def __reduce__(self) -> NoReturn:
         """Refuse the copy and persistence protocols; a receipt travels as its line."""
         raise TypeError("Receipt cannot be copied or serialized; use .line")
+
+    def verify(self, keyring: Keyring) -> bool:
+        """Return whether `sig` verifies under the keyring's gate key for `kid` within its window.
+
+        Proves signing only. Does not check freshness, binding, single use, or inclusion;
+        a consumer uses `Approved.from_wire` for SPEC §6. A keyring of the wrong type is a
+        `TypeError`, not False.
+        """
+        if type(keyring) is not Keyring:
+            raise TypeError("keyring: not a Keyring")
+        try:
+            keyring.check_record_signature(self.entry)
+        except KeyringError:
+            return False
+        return True
 
 
 class Log:
