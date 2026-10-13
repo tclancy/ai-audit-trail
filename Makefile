@@ -1,3 +1,4 @@
+# Targets expect .venv/bin first on PATH, created by `uv sync` (see README).
 .PHONY: check hooks hooks-installed pr lint types docs test mutations grep skeleton demo vectors vectors-test
 
 check: hooks-installed lint types docs test grep mutations

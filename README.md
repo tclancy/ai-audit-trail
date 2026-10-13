@@ -10,6 +10,14 @@ A signed, append-only, independently verifiable decision log for systems where a
 
 Pre-alpha. The wire format (`SPEC.md` §3) is the product; the Python is one implementation of it. Nothing here has been run against a real system. See `TASKS.md` for what exists.
 
+## Getting started
+
+```
+uv sync       # creates .venv from uv.lock with the pinned tools and the packages, editable
+make hooks    # with .venv/bin on PATH
+make check
+```
+
 ## Documents
 
 - `SPEC.md` — the contract: wire format, invariants, verifier checks, consumer rules, threat model.

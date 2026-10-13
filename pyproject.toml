@@ -1,3 +1,38 @@
+[project]
+name = "ai-audit-trail"
+version = "0.0.0"
+requires-python = ">=3.12"
+dependencies = []
+
+[tool.uv]
+package = false
+
+[tool.uv.workspace]
+members = ["packages/*"]
+
+[tool.uv.sources]
+audittrail-log = { workspace = true }
+audittrail-verify = { workspace = true }
+audittrail-testkit = { workspace = true }
+
+# The same pins requirements-dev.txt held, plus the workspace packages so that
+# `uv sync` installs them editable. Everything is resolved into uv.lock.
+[dependency-groups]
+dev = [
+    "ruff==0.6.9",
+    "mypy==1.11.2",
+    "pytest==8.3.3",
+    "pytest-cov==5.0.0",
+    "hypothesis==6.112.1",
+    "interrogate==1.7.0",
+    "import-linter==2.1",
+    "check-jsonschema==0.29.4",
+    "pre-commit==4.5.1",
+    "audittrail-log",
+    "audittrail-verify",
+    "audittrail-testkit",
+]
+
 [tool.ruff]
 line-length = 100
 target-version = "py312"
