@@ -13,7 +13,7 @@ import dataclasses
 import hashlib
 import json
 import threading
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -353,6 +353,31 @@ def test_rule_6_rejects_a_receipt_older_than_max_age(
         from_wire(approve_line, keyring)
 
 
+def test_rule_6_rejects_a_receipt_dated_further_ahead_than_skew(
+    approve_line: bytes, keyring: Keyring, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Exactly skew_s ahead passes; one millisecond more does not; skew_s=0 allows no lead."""
+
+    def now_is(lead: timedelta) -> None:
+        """Put the consumer's clock `lead` behind the receipt's ts."""
+        monkeypatch.setattr("audittrail.approved._now", lambda: APPROVE_TS - lead)
+
+    now_is(timedelta(seconds=60))
+    assert from_wire(approve_line, keyring).entry.seq == 1
+    now_is(timedelta(seconds=60, milliseconds=1))
+    with pytest.raises(GateError):
+        from_wire(approve_line, keyring)
+    now_is(timedelta(seconds=5))
+    assert from_wire(approve_line, keyring, skew_s=5).entry.seq == 1
+    with pytest.raises(GateError):
+        from_wire(approve_line, keyring, skew_s=4)
+    now_is(timedelta(milliseconds=1))
+    with pytest.raises(GateError):
+        from_wire(approve_line, keyring, skew_s=0)
+    now_is(timedelta(0))
+    assert from_wire(approve_line, keyring, skew_s=0).entry.seq == 1
+
+
 def test_rule_6_a_ts_that_matches_the_regex_but_is_no_date_is_refused(
     keyring: Keyring, clock: None, dev: None
 ) -> None:
@@ -449,6 +474,10 @@ def test_in_memory_seen_store_is_first_use_once_across_threads() -> None:
         {"max_age_s": True},
         {"max_age_s": 60.0},
         {"max_age_s": 2**53},
+        {"skew_s": -1},
+        {"skew_s": False},
+        {"skew_s": 60.0},
+        {"skew_s": 2**53},
     ],
 )
 def test_binding_parameters_are_validated(

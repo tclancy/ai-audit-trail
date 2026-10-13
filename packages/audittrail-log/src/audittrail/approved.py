@@ -5,9 +5,8 @@
 canonical and approve (1), signed by a current gate key (2), this log (3), this app (4), bound
 to the Candidate in hand (5), fresh (6), and never acted on before (7). Any failure is
 `GateError` and nothing is recorded as seen. Not here: rule 8, the consumer's own action log,
-which is the consumer's; retired-key grace (`grace_s`, I14, M2), until which a retired key
-is refused outright; and the freshness lower bound discussed in issue #17, so a `ts` ahead of
-`now` passes rule 6 as the spec currently writes it.
+which is the consumer's; and retired-key grace (`grace_s`, I14, M2), until which a retired
+key is refused outright.
 """
 
 from __future__ import annotations
@@ -121,22 +120,23 @@ class Approved:
         log_id: str,
         max_age_s: int,
         seen: SeenStore,
+        skew_s: int = 60,
     ) -> Approved:
         """Check SPEC §6 rules 1–7 in order on `line` and return the approval, else `GateError`.
 
-        `app` and `log_id` are validated against their §3.1 rules and `max_age_s` must be a
-        positive int below 2^53 (`SchemaError` otherwise); a `keyring`, `candidate`, or `seen`
-        of the wrong shape is a `TypeError`. These are caller bugs, not refusals. `seen` is
-        asked last, so a receipt refused on any other rule leaves its `request_id` unseen.
-        Does not write the consumer's action log (rule 8).
+        `app` and `log_id` are validated against their §3.1 rules, `max_age_s` must be a
+        positive int below 2^53 and `skew_s` a non-negative one (`SchemaError` otherwise); a
+        `keyring`, `candidate`, or `seen` of the wrong shape is a `TypeError`. These are caller
+        bugs, not refusals. `seen` is asked last, so a receipt refused on any other rule leaves
+        its `request_id` unseen. Does not write the consumer's action log (rule 8).
         """
-        _check_parameters(keyring, candidate, app, log_id, max_age_s, seen)
+        _check_parameters(keyring, candidate, app, log_id, max_age_s, seen, skew_s)
         record = _rule_1_canonical_approve(line)
         _rule_2_signed_by_current_gate_key(record, keyring)
         _rule_3_this_log(record, keyring, log_id)
         _rule_4_this_app(record, app)
         _rule_5_bound_to_candidate(record, candidate)
-        _rule_6_fresh(record, max_age_s)
+        _rule_6_fresh(record, max_age_s, skew_s)
         _rule_7_unseen(record, seen)
         self = object.__new__(cls)
         object.__setattr__(self, "entry", record)
@@ -145,7 +145,13 @@ class Approved:
 
 
 def _check_parameters(
-    keyring: object, candidate: object, app: object, log_id: object, max_age_s: object, seen: object
+    keyring: object,
+    candidate: object,
+    app: object,
+    log_id: object,
+    max_age_s: object,
+    seen: object,
+    skew_s: object,
 ) -> None:
     """Type-check the binding parameters before any rule runs. Does not look at the line."""
     if type(keyring) is not Keyring:
@@ -158,6 +164,8 @@ def _check_parameters(
     validate_string_field("log_id", log_id)
     if type(max_age_s) is not int or not 0 < max_age_s < _AGE_LIMIT:
         raise SchemaError("max_age_s: not a positive integer below 2^53")
+    if type(skew_s) is not int or not 0 <= skew_s < _AGE_LIMIT:
+        raise SchemaError("skew_s: not a non-negative integer below 2^53")
 
 
 def _rule_1_canonical_approve(line: bytes) -> Record:
@@ -209,10 +217,11 @@ def _rule_5_bound_to_candidate(record: Record, candidate: Candidate) -> None:
         raise GateError("rule 5: receipt is not bound to this candidate")
 
 
-def _rule_6_fresh(record: Record, max_age_s: int) -> None:
-    """`now - ts <= max_age_s`, compared in whole milliseconds. A `ts` that is no date is refused.
+def _rule_6_fresh(record: Record, max_age_s: int, skew_s: int) -> None:
+    """`-skew_s <= now - ts <= max_age_s`, in whole milliseconds. A `ts` that is no date is refused.
 
-    Does not bound `ts` from above: a receipt dated ahead of `now` passes (issue #17).
+    Bounded on both sides (issue #17): a receipt dated more than `skew_s` ahead of `now` is as
+    refused as one older than `max_age_s`. Does not read any clock but the consumer's.
     """
     try:
         ts = datetime.strptime(record.ts, _TS_FORMAT).replace(tzinfo=UTC)
@@ -221,6 +230,8 @@ def _rule_6_fresh(record: Record, max_age_s: int) -> None:
     age_ms = (_now() - ts) // timedelta(milliseconds=1)
     if age_ms > max_age_s * 1000:
         raise GateError("rule 6: receipt is older than max_age_s")
+    if age_ms < -skew_s * 1000:
+        raise GateError("rule 6: receipt is dated more than skew_s ahead of now")
 
 
 def _rule_7_unseen(record: Record, seen: SeenStore) -> None:
