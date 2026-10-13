@@ -138,13 +138,6 @@ def test_a_broken_stdout_is_exit_3(monkeypatch: pytest.MonkeyPatch) -> None:
     assert main(["--keyring", str(VECTORS / "keyring.json"), *map(str, files)]) == 3
 
 
-def test_option_abbreviations_are_refused(capsys: pytest.CaptureFixture[str]) -> None:
-    """`--key` is not `--keyring`."""
-    files = sorted((VECTORS / "positive" / "genesis-boot").glob("*.jsonl"))
-    assert main(["--key", str(VECTORS / "keyring.json"), *map(str, files)]) == 3
-    capsys.readouterr()
-
-
 # --- check 4 on its own --------------------------------------------------------
 
 

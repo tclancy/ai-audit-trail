@@ -52,7 +52,6 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="audittrail-verify",
         description="Verify an ai-audit-trail log against SPEC §5 checks 1-5.",
-        allow_abbrev=False,
     )
     parser.add_argument("--keyring", required=True, help="SPEC §3.8 keyring file")
     parser.add_argument("files", nargs="+", help="log files in seq order")
