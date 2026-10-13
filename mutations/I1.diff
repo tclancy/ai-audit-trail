@@ -1,8 +1,8 @@
 diff --git a/packages/audittrail-log/src/audittrail/approved.py b/packages/audittrail-log/src/audittrail/approved.py
-index cb85ba9..6a8f89a 100644
+index 3d33796..015c884 100644
 --- a/packages/audittrail-log/src/audittrail/approved.py
 +++ b/packages/audittrail-log/src/audittrail/approved.py
-@@ -200,9 +200,7 @@ def _rule_5_bound_to_candidate(record: Record, candidate: Candidate) -> None:
+@@ -212,9 +212,7 @@ def _rule_5_bound_to_candidate(record: Record, candidate: Candidate) -> None:
      data = candidate.canonical_bytes()
      if type(data) is not bytes:
          raise TypeError("candidate.canonical_bytes(): not bytes")
@@ -12,4 +12,4 @@ index cb85ba9..6a8f89a 100644
 +    hashlib.sha256(data).hexdigest()
  
  
- def _rule_6_fresh(record: Record, max_age_s: int) -> None:
+ def _rule_6_fresh(record: Record, max_age_s: int, skew_s: int) -> None:
