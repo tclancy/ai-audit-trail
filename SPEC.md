@@ -167,7 +167,7 @@ JCS object, owned by the verifier side, never writable by the gate's identity:
 {"keys":[{"alg":"ed25519","kid":"gate-2026q4","pub":"<base64 32 bytes>","role":"gate","valid_from_seq":0,"valid_to_seq":null}, {"alg":"ed25519","kid":"sink-minio-1","pub":"…","role":"sink",…}],"log_id":"ingest-prod","v":1}
 ```
 
-A `kid` verifies only records whose `seq` lies in its window. A `rotation` record at `seq = k` signed by the old key sets the old key's `valid_to_seq = k` and the new key's `valid_from_seq = k+1`; the keyring must agree or verification fails. Consumers refuse receipts whose `kid` is retired (see §6).
+A `kid` verifies only records whose `seq` lies in its window. A `rotation` record at `seq = k` signed by the old key sets the old key's `valid_to_seq = k` and the new key's `valid_from_seq = k+1`; the keyring must agree or verification fails. Consumers refuse receipts whose `kid` is retired (see §6). Every `pub` appears at most once in a keyring: a key is identified by its public bytes and `kid` is its name in records, so a keyring that lists one `pub` under two kids is invalid, because retiring one of the names would not retire the key (issue #19).
 
 ## 4. Library API (`audittrail-log`)
 
@@ -205,7 +205,8 @@ class Receipt:          # @final; __slots__; unpicklable; bytes of one decision 
 class Approved:         # see §6 for the wire-level rules this enforces
     @classmethod
     def from_wire(cls, line: bytes, keyring: Keyring, *, candidate: Candidate,
-                  app: str, log_id: str, max_age_s: int, seen: SeenStore) -> "Approved"
+                  app: str, log_id: str, max_age_s: int, seen: SeenStore,
+                  skew_s: int = 60) -> "Approved"
 
 def build_index(files, sqlite_path) -> None
 ```
@@ -248,7 +249,7 @@ A receipt proves that the gate's key signed a `decision` record. For a consumer 
 3. `log_id` equals the consumer's configured `log_id`. Staging receipts do not verify in production because the keyrings differ *and* the `log_id` differs.
 4. `app` equals the app the consumer is acting for.
 5. `cart_hash == sha256(candidate.canonical_bytes())` for the Candidate the consumer is about to act on. **A receipt not bound to a cart authorizes nothing.**
-6. `now − ts ≤ max_age_s`.
+6. `−skew_s ≤ now − ts ≤ max_age_s`, with `skew_s` the consumer's allowance for the gate's clock running ahead, default 60 (the bound §5 check 8 applies between `record.ts` and `sink_ts`). A receipt dated further into the future than `skew_s` is refused; freshness is bounded on both sides (issue #17).
 7. `request_id` has not been acted on before (`SeenStore`, durable).
 8. The consumer appends `{log_id, seq, hash(line), request_id, acted_ts, action_ref}` to its **own append-only action log** before acting. That log is the input to check 10.
 
@@ -258,7 +259,7 @@ Rules 1–7 are enforced by `Approved.from_wire` in Python and are normative for
 
 | ID | Invariant | Pinning test | Mutation (`mutations/I*.diff`, applied in a throwaway checkout; suite must go red) |
 |---|---|---|---|
-| I1 | No `Approved` without a verifying, bound, fresh, unseen receipt | Each of §6 rules 1–7 violated individually → `GateError` | remove the `cart_hash` comparison |
+| I1 | No `Approved` without a verifying, bound, fresh, unseen receipt | Each of §6 rules 1–7 violated individually → `GateError`, including `ts` more than `skew_s` ahead of `now` | remove the `cart_hash` comparison |
 | I2 | `record()` raises; never partial | unwritable path → `LogUnavailable`, no partial line; disk/memory head mismatch → raise | swap raise for return |
 | I3 | Strict schema and round-trip | negative vectors (§11) each exit 2 with the check number | skip the round-trip check |
 | I4 | Chain continuity and genesis | edit a byte → break at k+1; delete a line → seq gap; zero-hash prev at seq≠0 → fail; file set starting at seq 7 → exit 4 | accept zero-hash anywhere |

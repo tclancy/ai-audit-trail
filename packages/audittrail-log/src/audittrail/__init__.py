@@ -1,5 +1,7 @@
-"""ai-audit-trail: log. See SPEC.md. Exposes `Record`, the signing protocol, and their errors."""
+"""ai-audit-trail: log. See SPEC.md. Exposes `Record`, `Log`, `Approved`, `Keyring`, errors."""
 
+from audittrail.approved import Approved, Candidate, GateError, InMemorySeenStore, SeenStore
+from audittrail.keyring import Key, Keyring, KeyringError
 from audittrail.log import DecisionFields, Log, LogUnavailable, Receipt
 from audittrail.record import (
     MAX_LINE_BYTES,
@@ -11,6 +13,7 @@ from audittrail.record import (
     SchemaError,
     canonical_bytes,
     nesting_depth,
+    parse_object,
 )
 from audittrail.signing import (
     DOMAIN_ANCHOR,
@@ -22,6 +25,14 @@ from audittrail.signing import (
 )
 
 __all__ = [
+    "Approved",
+    "Candidate",
+    "GateError",
+    "InMemorySeenStore",
+    "Key",
+    "Keyring",
+    "KeyringError",
+    "SeenStore",
     "DOMAIN_ANCHOR",
     "DOMAIN_ANCHOR_RECEIPT",
     "DOMAIN_RECORD",
@@ -41,4 +52,5 @@ __all__ = [
     "SoftwareSigner",
     "canonical_bytes",
     "nesting_depth",
+    "parse_object",
 ]

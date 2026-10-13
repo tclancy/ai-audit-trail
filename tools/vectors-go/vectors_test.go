@@ -346,7 +346,8 @@ func keyringFor(t *testing.T, out, dir string) map[string]ringKey {
 	return loadKeyring(t, filepath.Join(out, "keyring.json"))
 }
 
-// loadKeyring parses a keyring file; null valid_to_seq becomes -1.
+// loadKeyring parses a keyring file; null valid_to_seq becomes -1. A kid or a
+// pub listed twice fails the test (SPEC §3.8).
 func loadKeyring(t *testing.T, path string) map[string]ringKey {
 	t.Helper()
 	var ring struct {
@@ -361,11 +362,19 @@ func loadKeyring(t *testing.T, path string) map[string]ringKey {
 		t.Fatal(err)
 	}
 	keys := map[string]ringKey{}
+	pubs := map[string]bool{}
 	for _, k := range ring.Keys {
 		pub, err := base64.StdEncoding.DecodeString(k.Pub)
 		if err != nil {
 			t.Fatal(err)
 		}
+		if _, dup := keys[k.Kid]; dup {
+			t.Fatalf("%s: kid %q listed twice", path, k.Kid)
+		}
+		if pubs[k.Pub] {
+			t.Fatalf("%s: pub of %q listed under two kids", path, k.Kid)
+		}
+		pubs[k.Pub] = true
 		to := int64(-1)
 		if k.To != nil {
 			to = *k.To
