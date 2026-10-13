@@ -80,7 +80,7 @@ _FIXED: dict[str, dict[str, object]] = {
 
 
 class NotRecord(ValueError):
-    """Check 2: wrong field set, a value outside its rule, or a §3.4 per-type value."""
+    """Check 2: wrong field set, a value outside its rule, or a §3.4 per-type value. Not chain."""
 
 
 def check_record(obj: dict[str, Any]) -> None:

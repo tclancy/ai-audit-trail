@@ -44,7 +44,7 @@ _MAX_INT_DIGITS = len(str(2**53 - 1))
 
 
 def _max_line_bytes() -> int:
-    """SPEC §3.2's derivation over the 25 fields: keys, quotes, colons, commas, braces, values."""
+    """SPEC §3.2's derivation over the 25 fields; never a hand-set number."""
     names = sorted([*_STRING_MAX, *_INT_FIELDS])
     total = 2 + len(names) - 1
     for name in names:
@@ -72,12 +72,21 @@ def parse_canonical(line: bytes) -> dict[str, Any]:
     non-integer number, `-0`, a non-object top level, and any byte-level difference from
     canonical form. Does not check the field set or any value against its rule.
     """
-    if not line or any(b < 0x20 or b > 0x7E for b in line):
-        raise NotCanonical("empty, or a byte outside printable ASCII")
     if len(line) > MAX_LINE_BYTES:
         raise NotCanonical("longer than any record line")
+    return parse_object(line)
+
+
+def parse_object(line: bytes) -> dict[str, Any]:
+    """Parse one JCS object that is not a record line: the depth bound, not the length bound.
+
+    SPEC §3.7 applies the depth bound to every object the verifier reads and the length bound
+    to record lines only, so keyrings and receipts come through here. Otherwise `parse_canonical`.
+    """
+    if not line or any(b < 0x20 or b > 0x7E for b in line):
+        raise NotCanonical("empty, or a byte outside printable ASCII")
     if nesting_depth(line) > MAX_NESTING_DEPTH:
-        raise NotCanonical("nested deeper than any record line")
+        raise NotCanonical("nested deeper than the bound")
     try:
         obj = json.loads(
             line.decode("ascii"),
@@ -96,7 +105,10 @@ def parse_canonical(line: bytes) -> dict[str, Any]:
 
 
 def canonical_bytes(obj: dict[str, Any]) -> bytes:
-    """Return the JCS bytes of `obj` within the record alphabet; `NotCanonical` outside it."""
+    """Return the JCS bytes of `obj` within the record alphabet; `NotCanonical` outside it.
+
+    Does not append a newline and does not check the field set.
+    """
     _require_alphabet(obj)
     try:
         text = json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
@@ -106,7 +118,10 @@ def canonical_bytes(obj: dict[str, Any]) -> bytes:
 
 
 def nesting_depth(line: bytes) -> int:
-    """Count SPEC §3.1 structural depth: brackets outside string literals, escapes honoured."""
+    """Count SPEC §3.1 structural depth: brackets outside string literals, escapes honoured.
+
+    Does not parse and does not check that brackets balance.
+    """
     depth = deepest = 0
     in_string = escaped = False
     for b in line:
@@ -153,7 +168,7 @@ def _require_alphabet(obj: object) -> None:
 
 
 def _no_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
-    """Build an object; a repeated key is `NotCanonical`."""
+    """Build an object; a repeated key is `NotCanonical`. Does not sort."""
     obj = dict(pairs)
     if len(obj) != len(pairs):
         raise NotCanonical("duplicate key")
@@ -161,7 +176,10 @@ def _no_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
 
 
 def _integer(text: str) -> int:
-    """Parse an integer literal; `-0` and an unconvertible literal are `NotCanonical`."""
+    """Parse an integer literal; `-0` and an unconvertible literal are `NotCanonical`.
+
+    Other negatives parse and are the schema's finding, as in the Go reference.
+    """
     if text == "-0":
         raise NotCanonical("-0")
     try:
