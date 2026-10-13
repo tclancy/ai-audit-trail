@@ -10,5 +10,8 @@ requires-python = ">=3.12"
 license = "Apache-2.0"
 dependencies = ["cryptography>=43,<44"]
 
+[project.scripts]
+audittrail-verify = "audittrail_verify.cli:main"
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/audittrail_verify"]
