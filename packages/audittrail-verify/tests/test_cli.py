@@ -14,7 +14,10 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from audittrail_verify import checks
+from audittrail_verify.checks import verify
 from audittrail_verify.cli import main
+from audittrail_verify.keyring import load_keyring
 
 VECTORS = Path(__file__).resolve().parents[3] / "spec" / "vectors"
 
@@ -51,12 +54,17 @@ NEGATIVE = sorted(p.name for p in (VECTORS / "negative").iterdir())
 
 
 @pytest.mark.parametrize("name", POSITIVE)
-def test_every_positive_vector_exits_0_with_its_hashes(
+def test_every_positive_vector_passes_checks_1_to_5_with_its_hashes_and_exits_4(
     name: str, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """Checks 1–5 pass, the report names them, and the hashes equal vector.hash line for line."""
+    """Checks 1–5 pass, the report names them, and the hashes equal vector.hash line for line.
+
+    Exit is 4, not 0, because checks 6–10 have not run (SPEC §5: 0 means all checks ran).
+    It becomes 0 when M2 implements them and `not_implemented` is empty.
+    """
     code, report = run(vector_files(f"positive/{name}"), keyring_for(f"positive/{name}"), capsys)
-    assert code == 0, report
+    assert code == 4, report
+    assert report["not_implemented"] == [6, 7, 8, 9, 10]
     assert report["checks_passed"] == [1, 2, 3, 4, 5]
     assert report["failures"] == []
     assert report["prefix_unverified"] is False
@@ -71,14 +79,15 @@ def test_every_negative_vector_fails_at_its_expected_check(
 ) -> None:
     """Exit 2 and `first_failing_check` equal to vector.expect, for every check this CLI runs.
 
-    The one vector whose expected check is 9 (unknown reason) passes checks 1–5, which is
-    what the report must say until check 9 arrives in M2.
+    The one vector whose expected check is 9 (unknown reason) passes checks 1–5 and exits 4,
+    because check 9 is skipped. The 4 is temporary: it becomes 2 at check 9 when M2 lands.
     """
     want = expected_check(f"negative/{name}")
     code, report = run(vector_files(f"negative/{name}"), keyring_for(f"negative/{name}"), capsys)
     if want in report["not_implemented"]:
         assert want == 9
-        assert code == 0
+        assert code == 4, report  # becomes 2 (first_failing_check 9) when check 9 lands in M2
+        assert report["failures"] == []
         return
     assert code == 2, report
     assert report["first_failing_check"] == want
@@ -126,7 +135,8 @@ def test_a_file_set_not_starting_at_seq_0_exits_4_and_never_0(
     assert report["prefix_unverified"] is True
     assert report["failures"] == []
     code, report = run(files, keyring_for("positive/rotation-two-files"), capsys)
-    assert code == 0
+    assert report["prefix_unverified"] is False
+    assert code == 4  # checks 6–10 skipped; 0 once they run (M2)
 
 
 def test_files_out_of_order_or_repeated_are_a_seq_failure(
@@ -224,16 +234,40 @@ def test_an_empty_file_and_a_missing_trailing_newline_fail_check_1(
 
 
 def test_the_installed_command_runs_as_a_subprocess() -> None:
-    """`python -m audittrail_verify` exits 0 on a positive vector and 2 on a negative one."""
+    """`python -m audittrail_verify` exits 4 on a positive vector (6–10 skip), 2 on a negative."""
     files = vector_files("positive/decision-approve")
     cmd = [sys.executable, "-m", "audittrail_verify", "--keyring", str(VECTORS / "keyring.json")]
     done = subprocess.run([*cmd, *map(str, files)], capture_output=True, check=False)  # noqa: S603
-    assert done.returncode == 0, done.stderr
-    assert json.loads(done.stdout)["exit"] == 0
+    assert done.returncode == 4, done.stderr
+    assert json.loads(done.stdout)["exit"] == 4
     files = vector_files("negative/zero-prev-seq-3")
     done = subprocess.run([*cmd, *map(str, files)], capture_output=True, check=False)  # noqa: S603
     assert done.returncode == 2
     assert json.loads(done.stdout)["first_failing_check"] == 4
+
+
+def test_checks_1_to_5_passing_with_a_check_not_run_exits_4_and_never_0(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """SPEC §5: 0 means every check ran and passed; a skipped check with nothing failed is 4.
+
+    Pinned on both sides: with checks listed under `not_implemented` the exit is 4, and only
+    with none listed is it 0, so neither "always 0" nor "always 4" passes.
+    """
+    files = vector_files("positive/decision-approve")
+    keyring = load_keyring(VECTORS / "keyring.json")
+    report = verify(files, keyring)
+    assert report["failures"] == []
+    assert report["prefix_unverified"] is False
+    assert report["not_implemented"] != []
+    assert report["exit"] == 4
+    for skipped in [(6,), (10,), (6, 7, 8, 9, 10)]:
+        monkeypatch.setattr(checks, "NOT_IMPLEMENTED", skipped)
+        assert verify(files, keyring)["exit"] == 4, skipped
+    monkeypatch.setattr(checks, "NOT_IMPLEMENTED", ())
+    report = verify(files, keyring)
+    assert report["not_implemented"] == []
+    assert report["exit"] == 0
 
 
 def test_vectors_directory_is_untouched_by_the_tests() -> None:
