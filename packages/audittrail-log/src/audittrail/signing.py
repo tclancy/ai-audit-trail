@@ -21,12 +21,20 @@ DOMAIN_ANCHOR_RECEIPT = b"ai-audit-trail/v1/anchor-receipt\x00"
 DOMAINS: frozenset[bytes] = frozenset({DOMAIN_RECORD, DOMAIN_ANCHOR, DOMAIN_ANCHOR_RECEIPT})
 """SPEC §3.3: a signature is always over DOMAIN || data; a signer refuses any other domain."""
 
+SIGNATURE_BYTES = 64
+"""An Ed25519 signature is exactly this long, so `v == 1` has no other legal length."""
+
 _SEED_LEN = 32
 _DEV_FLAG = "AUDITTRAIL_DEV"
 
 
 class SigningError(ValueError):
-    """A signer was asked for something it must refuse: a bad seed or an unknown domain."""
+    """A signer refused, failed, or answered wrongly; the caller rejects.
+
+    A bad seed or an unknown domain, and also a `sign` or `kid` call that raised an
+    `Exception` or returned something that is not a 64-byte signature. Not raised for a
+    `BaseException` such as `KeyboardInterrupt`, which propagates as itself.
+    """
 
 
 @runtime_checkable
