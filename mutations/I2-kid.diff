@@ -1,0 +1,16 @@
+diff --git a/packages/audittrail-log/src/audittrail/log.py b/packages/audittrail-log/src/audittrail/log.py
+index c84cecb..5761b9e 100644
+--- a/packages/audittrail-log/src/audittrail/log.py
++++ b/packages/audittrail-log/src/audittrail/log.py
+@@ -307,10 +307,7 @@ def _kid_of(signer: Signer) -> str:
+     `BaseException`; a `KeyboardInterrupt` through the signer propagates as itself, and
+     nothing has been written at that point either.
+     """
+-    try:
+-        return signer.kid
+-    except Exception as e:  # noqa: BLE001 - re-raised as the typed error, never continued
+-        raise SigningError(f"the signer's kid raised {type(e).__name__}") from e
++    return signer.kid
+ 
+ 
+ def _signature_of(signer: Signer, data: bytes) -> bytes:
