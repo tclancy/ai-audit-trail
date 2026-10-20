@@ -5,7 +5,7 @@ Checks run in order and each stops at its first failure, since a later check on 
 failed an earlier one means nothing and a report is about the first thing wrong;
 `first_failing_check` is therefore what a negative vector's `vector.expect` names. Not here:
 checks 6–10 (M2 and later), which the report lists under `not_implemented` so nobody
-mistakes them for passed.
+mistakes them for passed, and which hold the exit at 4 until they run (SPEC §5).
 """
 
 from __future__ import annotations
@@ -50,8 +50,9 @@ def verify(files: list[Path], keyring: Keyring) -> dict[str, Any]:
     """Run checks 1–5 over `files` in the order given and return the report as a dict.
 
     `exit` is 2 if a check failed, else 4 if the first record is not seq 0 (the prefix is
-    unverified), else 0. Does not sort or deduplicate the files, does not read the sink, and
-    does not apply checks 6–10.
+    unverified) or any check is listed in `not_implemented`, else 0. Never 0 while a check
+    is skipped. Does not sort or deduplicate the files, does not read the sink, and does not
+    apply checks 6–10.
     """
     lines, records, failure = _check_1_read_canonical(files)
     if failure is None:
@@ -73,7 +74,7 @@ def verify(files: list[Path], keyring: Keyring) -> dict[str, Any]:
         "prefix_unverified": prefix_unverified,
         "records": len(records),
         "hashes": [_hash_of(line.data) for line in lines] if failure is None else [],
-        "exit": 2 if failure is not None else 4 if prefix_unverified else 0,
+        "exit": 2 if failure is not None else 4 if prefix_unverified or NOT_IMPLEMENTED else 0,
     }
 
 

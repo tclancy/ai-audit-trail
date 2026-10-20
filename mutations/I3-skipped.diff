@@ -1,0 +1,13 @@
+diff --git a/packages/audittrail-verify/src/audittrail_verify/checks.py b/packages/audittrail-verify/src/audittrail_verify/checks.py
+index ac177b3..f02a8cc 100644
+--- a/packages/audittrail-verify/src/audittrail_verify/checks.py
++++ b/packages/audittrail-verify/src/audittrail_verify/checks.py
+@@ -74,7 +74,7 @@ def verify(files: list[Path], keyring: Keyring) -> dict[str, Any]:
+         "prefix_unverified": prefix_unverified,
+         "records": len(records),
+         "hashes": [_hash_of(line.data) for line in lines] if failure is None else [],
+-        "exit": 2 if failure is not None else 4 if prefix_unverified or NOT_IMPLEMENTED else 0,
++        "exit": 2 if failure is not None else 4 if prefix_unverified else 0,
+     }
+ 
+ 
