@@ -1,7 +1,12 @@
 # `make hooks` runs `pre-commit install`, which installs every hook type listed here.
-default_install_hook_types: [pre-commit, commit-msg]
-# Hooks without their own `stages` run at commit and at push (the pre-push gate is
-# installed per machine), and not again at the commit-msg stage.
+# pre-push is listed because `default_stages` below declares a pre-push battery:
+# without it here, `pre-commit install` writes no pre-push hook and that battery
+# runs only on a machine where someone remembered
+# `pre-commit install --hook-type pre-push` by hand. Listing it makes the gate a
+# property of the repo rather than of one laptop.
+default_install_hook_types: [pre-commit, commit-msg, pre-push]
+# Hooks without their own `stages` run at commit and at push, and not again at
+# the commit-msg stage.
 default_stages: [pre-commit, pre-push]
 repos:
   - repo: https://github.com/gitleaks/gitleaks

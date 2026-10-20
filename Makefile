@@ -10,7 +10,7 @@ hooks:   # installs every hook type named in .pre-commit-config.yaml (default_in
 # them is unchecked. Fails until `make hooks` has been run and .denylist.local
 # exists with at least one pattern (the --staged scan proves both).
 hooks-installed:
-	@for h in pre-commit commit-msg; do \
+	@for h in pre-commit commit-msg pre-push; do \
 	  grep -qs 'pre-commit' "$$(git rev-parse --git-path hooks)/$$h" \
 	    || { echo "hooks: $$h hook not installed; run: make hooks"; exit 1; }; \
 	done
