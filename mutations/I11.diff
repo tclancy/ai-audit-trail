@@ -1,0 +1,15 @@
+diff --git a/packages/audittrail-log/src/audittrail/signing.py b/packages/audittrail-log/src/audittrail/signing.py
+index 4c7c232..ab95d6d 100644
+--- a/packages/audittrail-log/src/audittrail/signing.py
++++ b/packages/audittrail-log/src/audittrail/signing.py
+@@ -16,8 +16,8 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+ from audittrail.record import STRING_RULES, SchemaError
+ 
+ DOMAIN_RECORD = b"ai-audit-trail/v1/record\x00"
+-DOMAIN_ANCHOR = b"ai-audit-trail/v1/anchor\x00"
+-DOMAIN_ANCHOR_RECEIPT = b"ai-audit-trail/v1/anchor-receipt\x00"
++DOMAIN_ANCHOR = DOMAIN_RECORD
++DOMAIN_ANCHOR_RECEIPT = DOMAIN_RECORD
+ DOMAINS: frozenset[bytes] = frozenset({DOMAIN_RECORD, DOMAIN_ANCHOR, DOMAIN_ANCHOR_RECEIPT})
+ """SPEC §3.3: a signature is always over DOMAIN || data; a signer refuses any other domain."""
+ 
