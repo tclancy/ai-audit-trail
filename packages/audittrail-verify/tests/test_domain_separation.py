@@ -18,11 +18,24 @@ from audittrail_verify.checks import DOMAIN_RECORD, _signature_problem
 from audittrail_verify.cli import main
 from audittrail_verify.keyring import Keyring, load_keyring
 from cryptography.exceptions import InvalidSignature
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
-VECTORS = Path(__file__).resolve().parents[3] / "spec" / "vectors"
+SPEC = Path(__file__).resolve().parents[3] / "spec"
+VECTORS = SPEC / "vectors"
 SHARED_KEYRING = VECTORS / "keyring.json"
 ANCHOR_DOMAIN = b"ai-audit-trail/v1/anchor\x00"
 """SPEC §3.3, anchor submissions."""
+RECEIPT_DOMAIN = b"ai-audit-trail/v1/anchor-receipt\x00"
+"""SPEC §3.3, sink receipts."""
+
+
+def published_key(kid: str) -> Ed25519PrivateKey:
+    """The published test key for `kid`, from `spec/test-seed.txt`. Generates nothing."""
+    for raw in (SPEC / "test-seed.txt").read_text(encoding="ascii").splitlines():
+        fields = raw.split()
+        if fields and not fields[0].startswith("#") and fields[1] == kid:
+            return Ed25519PrivateKey.from_private_bytes(bytes.fromhex(fields[0]))
+    raise KeyError(kid)
 
 
 def submission() -> dict[str, Any]:
@@ -81,7 +94,11 @@ def test_the_submission_bytes_verify_under_the_anchor_domain_only(shared: Keyrin
 def test_anchor_submission_signature_on_a_record_line_fails_check_5(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """The anchor vector, its last record (the anchor at seq 2) carrying the submission's sig."""
+    """The anchor vector, its last record (the anchor at seq 2) carrying the submission's sig.
+
+    The literal SPEC §7 I11 case. The submission's bytes differ from the record's, so this
+    would fail without domains too; the same-bytes tests below are what pin the domain.
+    """
     lines = lines_of("positive/anchor")
     path = tmp_path / "test.0000000000000000.jsonl"
     path.write_bytes(b"".join(line + b"\n" for line in lines))
@@ -108,3 +125,20 @@ def test_the_wrong_domain_vector_is_signed_under_the_anchor_domain_and_fails_che
     files = sorted((VECTORS / "negative" / "wrong-domain").glob("*.jsonl"))
     report = run(files, capsys)
     assert report["exit"] == 2 and report["first_failing_check"] == 5
+
+
+@pytest.mark.parametrize(
+    "domain", [ANCHOR_DOMAIN, RECEIPT_DOMAIN], ids=["anchor", "anchor-receipt"]
+)
+def test_a_record_body_signed_under_another_domain_fails_check_5(
+    shared: Keyring, domain: bytes
+) -> None:
+    """Same key, same bytes: the record domain reproduces the vector's sig; the others fail."""
+    _, decision = (parse_canonical(line) for line in lines_of("positive/decision-approve"))
+    _, body = signed_bytes(decision)
+    key = published_key(decision["kid"])
+    resign = base64.b64encode(key.sign(DOMAIN_RECORD + body)).decode("ascii")
+    assert "ed25519:" + resign == decision["sig"]
+    crossed = base64.b64encode(key.sign(domain + body)).decode("ascii")
+    bad = {**decision, "sig": "ed25519:" + crossed}
+    assert _signature_problem(bad, shared) == "signature does not verify"

@@ -151,6 +151,13 @@ BYPASS_SAMPLES = [
     ("suppress", "from contextlib import suppress as s\nwith s(ValueError):\n    f()\n"),
     ("suppress", "from contextlib import (\n    suppress as quiet,\n)\n"),
     ("suppress", "import contextlib\nquiet = contextlib.suppress\n"),
+    ("suppress", "import contextlib as c\nwith c.suppress(KeyError):\n    f()\n"),
+    ("swallow", "try:\n    f()\nexcept KeyError: pass\n"),
+    ("swallow", "for x in y:\n    try:\n        f()\n    except* ValueError:\n        break\n"),
+    ("swallow", "def g():\n    try:\n        f()\n    except ValueError:\n        return\n"),
+    ("swallow", "def g():\n    try:\n        f()\n    except ValueError:\n        return None\n"),
+    ("strict", "def f(strict: bool = False) -> None:\n    return None\n"),
+    ("no_verify", "def f(no_verify: bool) -> None:\n    return None\n"),
 ]
 
 KEY_SAMPLES = [
@@ -165,6 +172,15 @@ KEY_SAMPLES = [
     ("base64_named", f'SIGNING_KEY = "{B64_32}"\n'),
     ("base64_named", f'{{"priv":"{B64_32}"}}\n'),
     ("pem", f"x = '''{PEM}\\nMC4CAQ\\n'''\n"),
+    ("pem", "-----BEGIN " + "ENCRYPTED PRIVATE KEY-----\n"),
+    ("pem", "-----BEGIN " + "PGP PRIVATE KEY BLOCK-----\n"),
+    ("fromhex", f'k = bytes.fromhex("{HEX64[:32]}" "{HEX64[32:]}")\n'),
+    ("fromhex", f'k = binascii.unhexlify("{HEX64}")\n'),
+    ("hex_named", f'signing_key = "{HEX64.upper()}"\n'),
+    ("hex_named", f'sk = "{HEX64}"\n'),
+    ("base64_named", f'{{"kty":"OKP","d":"{B64_32.replace("+", "-")}"}}\n'),
+    ("escapes", "k = b'" + "".join(f"\\{b:03o}" for b in range(200, 232)) + "'\n"),
+    ("escapes", "k = b'\\x2d\\x71abcdefgh\\x01\\x02\\x03ijklmnop\\x04\\x05\\x06\\x07\\x08'\n"),
 ]
 
 CLEAN_SAMPLES = [
@@ -179,6 +195,11 @@ CLEAN_SAMPLES = [
     "seed = bytes.fromhex(fields[0])\n",
     "allow = {'allow_list': 1}\n",
     '"""Docstrings may say we never suppress anything."""\n',
+    '"""Refuse the line.\n\n    suppress nothing, ever.\n    """\n',
+    "# skip everything except records\nif r.type != 'record':\n    continue\n",
+    'class P(Protocol):\n    """Anything except bytes."""\n\n    def b(self) -> bytes: ...\n',
+    "try:\n    f()\nexcept InvalidSignature:\n    return False\n",
+    "a = 'x' + 'y'\nb = \"z\"\n",
 ]
 
 
@@ -202,10 +223,12 @@ def test_each_key_material_shape_is_a_hit(tmp_path: Path, kind: str, text: str) 
     assert scan_text(tmp_path, text, grep_tests.KEY_MATERIAL, "x.jsonl") != [], kind
 
 
-def test_a_real_key_repr_is_a_hit(tmp_path: Path) -> None:
-    """The repr of 32 bytes that look random, printable characters mixed in, is reported."""
-    text = f"k = {hashlib.sha256(b'not a key').digest()!r}\n"
-    assert scan_text(tmp_path, text, grep_tests.KEY_MATERIAL) != []
+def test_real_key_reprs_are_hits(tmp_path: Path) -> None:
+    """The repr of each of 2000 random-looking 32-byte values, printable runs and all, is a hit."""
+    path = tmp_path / "s.py"
+    for i in range(2000):
+        path.write_text(f"k = {hashlib.sha256(str(i).encode()).digest()!r}\n", encoding="utf-8")
+        assert grep_tests.scan_files([path], grep_tests.KEY_MATERIAL) != [], i
 
 
 @pytest.mark.parametrize("text", CLEAN_SAMPLES)
@@ -236,19 +259,17 @@ def git(root: Path, *args: str) -> None:
 
 
 def test_committed_logs_are_found_outside_spec_only(tmp_path: Path) -> None:
-    """Tracked .jsonl and .log files are listed, spec/ is exempt, untracked files are not."""
+    """Tracked logs and key files are listed whatever the extension case; spec/ is exempt."""
     git(tmp_path, "init", "-q")
-    for rel in ["a/x.jsonl", "b/c/y.log", "spec/vectors/z.jsonl", "a/x.py"]:
+    for rel in ["a/x.jsonl", "b/c/y.log", "d/k.PEM", "spec/vectors/z.jsonl", "a/x.py"]:
         (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
         (tmp_path / rel).write_text(f'{{"seed":"{HEX64}"}}\n', encoding="utf-8")
     (tmp_path / "untracked.jsonl").write_text("{}\n", encoding="utf-8")
-    git(tmp_path, "add", "a", "b", "spec")
+    git(tmp_path, "add", "a", "b", "d", "spec")
     found = sorted(p.relative_to(tmp_path).as_posix() for p in grep_tests.committed_logs(tmp_path))
-    assert found == ["a/x.jsonl", "b/c/y.log"]
-    assert (
-        len(grep_tests.scan_files(grep_tests.committed_logs(tmp_path), grep_tests.KEY_MATERIAL))
-        >= 2
-    )
+    assert found == ["a/x.jsonl", "b/c/y.log", "d/k.PEM"]
+    hits = grep_tests.scan_files(grep_tests.committed_logs(tmp_path), grep_tests.KEY_MATERIAL)
+    assert len(hits) >= 3
 
 
 def test_main_scans_committed_logs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

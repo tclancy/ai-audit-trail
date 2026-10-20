@@ -18,35 +18,48 @@ SPEC = ROOT / "SPEC.md"
 README = ROOT / "README.md"
 VERBATIM_MARK = "(verbatim in README)"
 
-_KEYISH_NAME = r"(?i)\b\w*(?:seed|key|priv|secret)\w*['\"]?\s*(?::[^=\n]*)?[:=]\s*[rbu]{0,2}['\"]"
-"""A name containing seed, key, priv or secret, as an assignment, annotation, kwarg or JSON key."""
+_KEYISH_NAME = (
+    r"(?i)(?:\b\w*(?:seed|key|priv|secret)\w*|\b(?:d|sk))"
+    r"['\"]?\s*(?::[^=\n]*)?[:=]\s*[rbu]{0,2}['\"]"
+)
+"""A name containing seed, key, priv or secret (or the JWK `d`, or `sk`), as an assignment,
+annotation, kwarg or JSON key."""
 
 BYPASS = [
     r"\bstrict\s*=\s*False\b",
+    r"\bstrict\s*:[^=\n]*=\s*False\b",
     r"\bverify\s*=\s*False\b",
     r"\b(allow|skip|lenient|unsafe)_[a-z_]+\s*=",
     # The same names annotated, as every parameter is under mypy --strict (issue #25).
     r"(?i)\b(allow|skip|lenient|unsafe)_\w+\s*:(?!=)",
-    # Any except clause, one line or several, whose whole body is pass, continue or `...`.
-    r"\bexcept\b[^:]*:\s*(?:#[^\n]*\s*)*(?:pass|continue|\.\.\.)(?![\w.])",
+    r"(?i)\b(no_verify|insecure)\w*\s*[:=](?!=)",
+    # An except clause (its parenthesised tuple may span lines) whose whole body is pass,
+    # continue, break, `...`, or a bare `return` / `return None`.
+    r"^[ \t]*except\b(?:[^:\n(]|\([^)]*\))*:\s*(?:#[^\n]*\s*)*"
+    r"(?:(?:pass|continue|break|\.\.\.)(?![\w.])|return(?:[ \t]+None)?[ \t]*(?:#[^\n]*)?$)",
     # contextlib.suppress in any spelling: a call, an attribute, or an import (aliases too).
     r"\bsuppress\s*\(",
-    r"\.\s*suppress\b",
-    r"\bimport\b[^\n]*\bsuppress\b|^\s*suppress\b",
+    r"\.suppress\b",
+    r"\bimport\b[^\n]*\bsuppress\b|^[ \t]*suppress\s*(?:as\b|,|\))",
     r"\bxfail\b",
     r"\bpickle\b",
 ]
 KEY_MATERIAL = [
-    r"-----BEGIN (OPENSSH |EC |RSA )?PRIVATE KEY-----",
+    r"-----BEGIN [A-Z ]*PRIVATE KEY(?: BLOCK)?-----",
     r"\bseed\s*=\s*b?['\"][0-9a-fA-F]{32,}",
-    r"\b(?:bytes|bytearray)\s*\.\s*fromhex\s*\(\s*[rRuU]?['\"](?:[0-9a-fA-F]\s*){64,}['\"]",
-    _KEYISH_NAME + r"[0-9a-f]{64,}['\"]",
+    # A hex literal of 32+ characters given to fromhex or unhexlify (half of a split 64 is 32).
+    r"\b(?:fromhex|unhexlify|a2b_hex)\s*\(\s*[rRbBuU]?['\"](?:[0-9a-fA-F]\s*){32,}['\"]",
+    _KEYISH_NAME + r"[0-9a-fA-F]{64,}['\"]",
     _KEYISH_NAME + r"[A-Za-z0-9+/_-]{42,}={0,2}['\"]",
-    # Twelve or more \xHH escapes in one literal, a few other characters allowed between them:
-    # how a 32-byte key looks pasted as bytes or as its repr.
-    r"(?:\\x[0-9a-fA-F]{2}(?:[^'\"\\\n]|\\[^x\n]){0,6}){12,}",
+    # One literal holding eight or more \xHH (or octal \NNN) escapes anywhere between its
+    # quotes: how a 32-byte key looks pasted as bytes or as its repr.
+    r"(['\"])(?=(?:(?:(?!\1)[^\\\n]|\\[^x0-7\n])*\\(?:x[0-9a-fA-F]{2}|[0-7]{3})){8})",
 ]
 """Run over sources and over committed logs. `spec/` is exempt: it holds the published seed."""
+
+
+LOG_PATHSPECS = [f":(icase)*.{ext}" for ext in ("jsonl", "ndjson", "log", "pem", "key")]
+"""Committed files scanned with KEY_MATERIAL besides the sources; extension case is ignored."""
 
 
 class SpecError(Exception):
@@ -64,12 +77,12 @@ def source_files() -> list[Path]:
 
 
 def committed_logs(root: Path = ROOT) -> list[Path]:
-    """Every tracked `*.jsonl` and `*.log` under `root` outside `spec/` (SPEC §7 I13 "and logs").
+    """Every tracked file matching LOG_PATHSPECS under `root`, outside `spec/` (I13 "and logs").
 
     Asks git, so an untracked log is not listed; a git failure raises and the run fails.
     """
     listed = subprocess.run(  # noqa: S603
-        ["git", "-C", str(root), "ls-files", "-z", "--", "*.jsonl", "*.log"],  # noqa: S607
+        ["git", "-C", str(root), "ls-files", "-z", "--", *LOG_PATHSPECS],  # noqa: S607
         check=True,
         capture_output=True,
     ).stdout.decode("utf-8")

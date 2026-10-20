@@ -115,7 +115,9 @@ def test_anchor_submission_signature_presented_as_a_record_signature_is_refused(
 ) -> None:
     """The anchor record and the approve decision, each carrying the submission's sig, fail.
 
-    `Keyring.check_record_signature` raises and `Approved.from_wire` refuses at rule 2.
+    `Keyring.check_record_signature` raises and `Approved.from_wire` refuses at rule 2. The
+    literal SPEC §7 I11 case; its bytes differ from the record's too, so the same-bytes test
+    below is the one that pins the domain.
     """
     stolen = submission()["sig"]
     anchor_record = lines_of("positive/anchor")[2]
