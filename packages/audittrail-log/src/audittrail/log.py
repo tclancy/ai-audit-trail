@@ -34,7 +34,7 @@ from audittrail.record import (
     canonical_bytes,
     validate_string_field,
 )
-from audittrail.signing import DOMAIN_RECORD, Signer, SigningError
+from audittrail.signing import DOMAIN_RECORD, SIGNATURE_BYTES, Signer, SigningError
 
 REASON_V = 1
 """The `spec/reasons.txt` section every record written by this version names."""
@@ -267,7 +267,12 @@ class Log:
     def _signed_line(
         self, record_type: str, specific: dict[str, Any], *, seq: int, prev: str
     ) -> bytes:
-        """Build the full field set, sign its body, and return the canonical line (SPEC §3.2)."""
+        """Build the full field set, sign its body, and return the canonical line (SPEC §3.2).
+
+        Raises `SigningError` when the signer misbehaves and `RecordError` when the fields do
+        not pass their rules; every caller must turn both into `LogUnavailable` (I2). Does not
+        write, and does not read the head.
+        """
         ts = _ts_now()
         if self._head is not None and ts < self._head.ts:
             raise LogUnavailable("the wall clock went backwards")
@@ -284,13 +289,46 @@ class Log:
             "request_id": _ulid(),
             "reason_v": REASON_V,
             "since_hb": 0,
-            "kid": self._signer.kid,
+            "kid": _kid_of(self._signer),
             "prev": prev,
             **specific,
         }
-        signature = self._signer.sign(DOMAIN_RECORD, canonical_bytes(fields))
+        signature = _signature_of(self._signer, canonical_bytes(fields))
         fields["sig"] = "ed25519:" + base64.b64encode(signature).decode("ascii")
         return Record(**fields).line()
+
+
+def _kid_of(signer: Signer) -> str:
+    """Return the signer's `kid`, turning any `Exception` it raises into `SigningError`.
+
+    The signer is the one collaborator `Log` does not own, and a remote one can be down at
+    the moment a record is built. Does not check the kid's shape: `Record` applies the SPEC
+    §3.1 rule, and a kid of the wrong type reaches it unchanged. Does not catch a
+    `BaseException`; a `KeyboardInterrupt` through the signer propagates as itself, and
+    nothing has been written at that point either.
+    """
+    try:
+        return signer.kid
+    except Exception as e:  # noqa: BLE001 - re-raised as the typed error, never continued
+        raise SigningError(f"the signer's kid raised {type(e).__name__}") from e
+
+
+def _signature_of(signer: Signer, data: bytes) -> bytes:
+    """Return the signer's signature over `DOMAIN_RECORD || data`, as exactly 64 `bytes`.
+
+    Any `Exception` the signer raises, and any return value that is not 64 `bytes`, is
+    `SigningError` with the original chained; both callers turn that into `LogUnavailable`
+    (I2). `bytes` exactly: a `bytearray` of the right length encodes to a `sig` that matches
+    its rule, so nothing downstream would refuse it. Does not retry, does not verify the
+    signature it is given, and does not catch a `BaseException`.
+    """
+    try:
+        signature = signer.sign(DOMAIN_RECORD, data)
+    except Exception as e:  # noqa: BLE001 - re-raised as the typed error, never continued
+        raise SigningError(f"the signer raised {type(e).__name__}") from e
+    if type(signature) is not bytes or len(signature) != SIGNATURE_BYTES:
+        raise SigningError("the signer did not return a 64-byte signature")
+    return signature
 
 
 def _check_identity(

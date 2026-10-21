@@ -556,3 +556,146 @@ def test_head_is_compared_by_hash_not_by_seq(tmp_path: Path, signer: SoftwareSig
     with pytest.raises(LogUnavailable):
         log_a.record(approve())
     assert (a / "test.0000000000000000.jsonl").read_bytes() == swapped
+
+
+# --- I2: the signer is untrusted ---------------------------------------------
+
+
+class RaisingSigner:
+    """A Signer whose `sign` raises something that is not a SigningError."""
+
+    kid = "gate-test-1"
+
+    def __init__(self, error: Exception) -> None:
+        """Hold the exception to raise. An `Exception`: the boundary deliberately stops there."""
+        self._error = error
+
+    def sign(self, domain: bytes, data: bytes) -> bytes:
+        """Raise the held exception instead of signing."""
+        raise self._error
+
+
+class WrongReturnSigner:
+    """A Signer whose `sign` returns something other than a 64-byte signature."""
+
+    kid = "gate-test-1"
+
+    def __init__(self, value: object) -> None:
+        """Hold the value to return. Does not check its type; that is the Log's job."""
+        self._value = value
+
+    def sign(self, domain: bytes, data: bytes) -> bytes:
+        """Return the held value, whatever its type."""
+        return self._value  # type: ignore[return-value]
+
+
+class KidRaisingSigner:
+    """A Signer whose `kid` raises, as a remote signer's would when the key service is down."""
+
+    def __init__(self, error: Exception) -> None:
+        """Hold the exception the property raises."""
+        self._error = error
+
+    @property
+    def kid(self) -> str:
+        """Raise instead of naming a key."""
+        raise self._error
+
+    def sign(self, domain: bytes, data: bytes) -> bytes:
+        """Never reached: `_signed_line` reads `kid` before it signs."""
+        return b"\x00" * 64
+
+
+# A signer factory and the exception type the Log must keep in the cause chain, or None
+# where the Log's own boundary is the only thing that noticed.
+BAD_SIGNERS = [
+    pytest.param(
+        lambda: RaisingSigner(RuntimeError("the key service is down")),
+        RuntimeError,
+        id="sign-raises-RuntimeError",
+    ),
+    pytest.param(
+        lambda: RaisingSigner(ValueError("not a SigningError")), ValueError, id="sign-raises-Value"
+    ),
+    pytest.param(lambda: RaisingSigner(KeyError("kid")), KeyError, id="sign-raises-KeyError"),
+    pytest.param(lambda: RaisingSigner(MemoryError()), MemoryError, id="sign-raises-MemoryError"),
+    pytest.param(lambda: WrongReturnSigner("ed25519:not-bytes"), None, id="sign-returns-str"),
+    pytest.param(lambda: WrongReturnSigner(None), None, id="sign-returns-None"),
+    pytest.param(lambda: WrongReturnSigner(bytearray(64)), None, id="sign-returns-bytearray"),
+    pytest.param(lambda: WrongReturnSigner(b"\x00" * 63), None, id="sign-returns-63-bytes"),
+    pytest.param(lambda: WrongReturnSigner(b"\x00" * 65), None, id="sign-returns-65-bytes"),
+    pytest.param(
+        lambda: KidRaisingSigner(RuntimeError("the key service is down")),
+        RuntimeError,
+        id="kid-raises-RuntimeError",
+    ),
+]
+
+
+def causes_of(error: BaseException) -> list[BaseException]:
+    """The exception and every `__cause__` behind it, outermost first. Ignores `__context__`."""
+    chain: list[BaseException] = []
+    current: BaseException | None = error
+    while current is not None:
+        chain.append(current)
+        current = current.__cause__
+    return chain
+
+
+@pytest.mark.parametrize(("make_signer", "planted"), BAD_SIGNERS)
+def test_a_misbehaving_signer_is_log_unavailable_at_genesis(
+    tmp_path: Path,
+    make_signer: typing.Callable[[], typing.Any],
+    planted: type[BaseException] | None,
+) -> None:
+    """Genesis refuses as LogUnavailable, creates no file, and chains the signer's own failure."""
+    with pytest.raises(LogUnavailable) as caught:
+        Log(
+            tmp_path,
+            "test",
+            make_signer(),
+            actor=GATE,
+            template_hash=TEMPLATE,
+            model_id="test-model-1",
+            policy_hash=POLICY,
+        )
+    assert not list(tmp_path.glob("*.jsonl"))
+    chain = causes_of(caught.value)
+    assert any(isinstance(c, SigningError) for c in chain), chain
+    if planted is not None:
+        assert any(type(c) is planted for c in chain), chain
+
+
+@pytest.mark.parametrize(("make_signer", "planted"), BAD_SIGNERS)
+def test_a_misbehaving_signer_is_log_unavailable_at_record(
+    tmp_path: Path,
+    signer: SoftwareSigner,
+    make_signer: typing.Callable[[], typing.Any],
+    planted: type[BaseException] | None,
+) -> None:
+    """record() refuses as LogUnavailable and the log is unchanged byte for byte.
+
+    The SigningError in the cause chain is what pins *which layer* refused: a 63-byte
+    signature base64-encodes fine, so without the boundary check the first thing to notice
+    it is Record's `sig` rule, and the chain would carry a SchemaError instead.
+    """
+    log = open_log(tmp_path, signer)
+    before = lines_of(tmp_path)
+    log._signer = make_signer()
+    with pytest.raises(LogUnavailable) as caught:
+        log.record(approve())
+    assert lines_of(tmp_path) == before
+    chain = causes_of(caught.value)
+    assert any(isinstance(c, SigningError) for c in chain), chain
+    if planted is not None:
+        assert any(type(c) is planted for c in chain), chain
+
+
+def test_a_signer_that_works_is_still_the_normal_path(
+    tmp_path: Path, signer: SoftwareSigner
+) -> None:
+    """The boundary refuses nothing a real signer produces: 64 bytes, and the signature verifies."""
+    log = open_log(tmp_path, signer)
+    record = log.record(approve()).entry
+    assert len(base64.b64decode(record.sig.removeprefix("ed25519:"))) == 64
+    assert_signed(record)

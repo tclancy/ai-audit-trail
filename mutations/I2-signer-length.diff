@@ -1,0 +1,13 @@
+diff --git a/packages/audittrail-log/src/audittrail/log.py b/packages/audittrail-log/src/audittrail/log.py
+index c84cecb..d35e1a9 100644
+--- a/packages/audittrail-log/src/audittrail/log.py
++++ b/packages/audittrail-log/src/audittrail/log.py
+@@ -326,8 +326,6 @@ def _signature_of(signer: Signer, data: bytes) -> bytes:
+         signature = signer.sign(DOMAIN_RECORD, data)
+     except Exception as e:  # noqa: BLE001 - re-raised as the typed error, never continued
+         raise SigningError(f"the signer raised {type(e).__name__}") from e
+-    if type(signature) is not bytes or len(signature) != SIGNATURE_BYTES:
+-        raise SigningError("the signer did not return a 64-byte signature")
+     return signature
+ 
+ 
