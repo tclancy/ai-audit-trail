@@ -27,7 +27,7 @@ Humans: keep this file honest. Check items only when merged.
 - [X] `Log.record` with file lock, prev-from-disk, `fsync`, `boot` record at init; `LogUnavailable` on any failure (I2); refuse re-genesis.
 - [ ] `Receipt`; `Approved.from_wire` enforcing SPEC §6 rules 1–7 with an in-memory `SeenStore` (I1).
 - [ ] `audittrail_verify` CLI: checks 1–5, exit codes 0/2/3/4; tests read only `spec/`.
-- [ ] Domain separation test (I11); key-material grep test (I13).
+- [X] Domain separation test (I11); key-material grep test (I13).
 - [ ] 30-line `apps/gate-stub` and `apps/consumer-stub`; two-service `deploy/compose.yml`; `make skeleton`.
 - [ ] Mutation diffs for I1, I2, I3, I4 (chain), I8, I11, I12; CI mutation job; I15 apply-check.
 - [ ] Narrated demo, five scenes: `demo/demo.sh` (≈80 lines) against `make skeleton`, printing what happened after each scene. The agent is a shell loop posting carts; the README says so and why (requests are untrusted bytes whoever produced them). Scenes: (1) cart matches oracle → approve, receipt, consumer acts — show record line and action line side by side; (2) same account, different amount → `R_ORACLE_MISMATCH`, consumer receives nothing; (3) scene-1 receipt delivered twice → refused by `SeenStore`, then with a different cart → refused by `cart_hash`; (4) `sed` one byte in the log → `audittrail-verify` exit 2 naming the line, restore → exit 4, checks 6–10 listed as not run; (5) oracle down, three carts → three `R_ORACLE_UNAVAILABLE`, zero approvals. Scene 6 (signed-but-unwritten receipt caught only by the reconciler) is added in M4. No anchors in the demo until M3. `make demo` runs it; it is the M1 acceptance artifact a stranger can run.
