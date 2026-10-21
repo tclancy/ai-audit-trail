@@ -795,3 +795,70 @@ def test_every_write_path_converts_the_same_build_failures(
             open_log(tmp_path, signer)
     assert planted in causes_of(caught.value)
     assert lines_of(tmp_path) == before
+
+
+# --- failures outside the build: directory reads, close, odd paths ------------------
+
+
+@pytest.mark.parametrize("existing", [False, True], ids=["genesis", "boot"])
+def test_an_unsearchable_directory_is_log_unavailable(
+    tmp_path: Path, signer: SoftwareSigner, existing: bool
+) -> None:
+    """A directory that can be listed but not searched is LogUnavailable; the file is unchanged."""
+    if os.geteuid() == 0:
+        pytest.fail("this test needs a non-root user; root ignores directory modes")
+    if existing:
+        open_log(tmp_path, signer)
+    before = lines_of(tmp_path)
+    tmp_path.chmod(0o600)
+    try:
+        with pytest.raises(LogUnavailable) as caught:
+            open_log(tmp_path, signer)
+    finally:
+        tmp_path.chmod(0o700)
+    assert any(isinstance(c, PermissionError) for c in causes_of(caught.value))
+    assert lines_of(tmp_path) == before
+
+
+def test_a_directory_path_with_a_nul_is_log_unavailable(
+    tmp_path: Path, signer: SoftwareSigner
+) -> None:
+    """A path `os.open` refuses with ValueError is LogUnavailable, and nothing is created."""
+    with pytest.raises(LogUnavailable):
+        open_log(tmp_path / "a\0b", signer)
+    assert not list(tmp_path.iterdir())
+
+
+def closing_then_eio(real_close: typing.Callable[[int], None]) -> typing.Callable[[int], None]:
+    """An `os.close` that really closes, then reports EIO, as close does on failed write-back."""
+
+    def close(fd: int) -> None:
+        """Close for real, then raise EIO."""
+        real_close(fd)
+        raise OSError(5, "close EIO")
+
+    return close
+
+
+def test_a_failing_close_is_log_unavailable_at_genesis(
+    tmp_path: Path, signer: SoftwareSigner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """EIO from close after the genesis write is LogUnavailable, not a raw OSError."""
+    with monkeypatch.context() as m:
+        m.setattr(os, "close", closing_then_eio(os.close))
+        with pytest.raises(LogUnavailable):
+            open_log(tmp_path, signer)
+
+
+@pytest.mark.parametrize("signer_works", [True, False], ids=["after-write", "over-refusal"])
+def test_a_failing_close_is_log_unavailable_at_record(
+    tmp_path: Path, signer: SoftwareSigner, monkeypatch: pytest.MonkeyPatch, signer_works: bool
+) -> None:
+    """EIO from close is LogUnavailable whether the append wrote or was already refusing."""
+    log = open_log(tmp_path, signer)
+    if not signer_works:
+        log._signer = FailingSigner()
+    with monkeypatch.context() as m:
+        m.setattr(os, "close", closing_then_eio(os.close))
+        with pytest.raises(LogUnavailable):
+            log.record(approve())

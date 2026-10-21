@@ -1,0 +1,16 @@
+diff --git a/packages/audittrail-log/src/audittrail/log.py b/packages/audittrail-log/src/audittrail/log.py
+index efcf6ba..30223f0 100644
+--- a/packages/audittrail-log/src/audittrail/log.py
++++ b/packages/audittrail-log/src/audittrail/log.py
+@@ -416,10 +416,7 @@ def _close(fd: int) -> None:
+     Raised from a `finally`, it replaces any `LogUnavailable` already on its way out, which
+     keeps the type the caller sees the same either way.
+     """
+-    try:
+-        os.close(fd)
+-    except OSError as e:
+-        raise LogUnavailable(f"cannot close the log: {e}") from e
++    os.close(fd)
+ 
+ 
+ def _write_line(fd: int, line: bytes) -> None:

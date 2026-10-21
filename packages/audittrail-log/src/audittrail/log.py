@@ -193,10 +193,14 @@ class Log:
         Refuses a directory with any other file for this log_id. The existing-file path goes
         through `_append`, so the head is read under the lock like every other write.
         """
-        others = [p for p in self._dir.glob(f"{self._log_id}.*.jsonl") if p != self._path]
+        try:
+            others = [p for p in self._dir.glob(f"{self._log_id}.*.jsonl") if p != self._path]
+            exists = self._path.exists()
+        except OSError as e:
+            raise LogUnavailable(f"cannot read the log directory: {e}") from e
         if others:
             raise LogUnavailable("the directory holds more than the first log file")
-        if self._path.exists():
+        if exists:
             self._append("boot", self._boot_fields())
             return
         with self._lock:
@@ -250,7 +254,7 @@ class Log:
             except _WRITE_FAILURES as e:
                 raise LogUnavailable(f"cannot append to the log: {e}") from e
             finally:
-                os.close(fd)
+                _close(fd)
             entry = Record.from_line(line)
             self._head, self._head_hash = entry, _sha256_of(line)
             return Receipt(line, entry)
@@ -381,17 +385,21 @@ def _read_head_fd(fd: int) -> tuple[Record, str] | None:
 
 
 def _create_with_line(path: Path, line: bytes) -> None:
-    """Create the file exclusively with one line, fsync it, then fsync the directory."""
+    """Create the file exclusively with one line, fsync it, then fsync the directory.
+
+    A path `os.open` refuses as a `ValueError` (an embedded NUL) is `LogUnavailable` like any
+    other path it cannot create. Does not remove the file if the write after the create fails.
+    """
     try:
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    except OSError as e:
+    except (OSError, ValueError) as e:
         raise LogUnavailable(f"cannot create the log: {e}") from e
     try:
         _write_line(fd, line)
     except OSError as e:
         raise LogUnavailable(f"cannot write genesis: {e}") from e
     finally:
-        os.close(fd)
+        _close(fd)
     try:
         dir_fd = os.open(path.parent, os.O_RDONLY)
         try:
@@ -400,6 +408,18 @@ def _create_with_line(path: Path, line: bytes) -> None:
             os.close(dir_fd)
     except OSError as e:
         raise LogUnavailable(f"cannot fsync the log directory: {e}") from e
+
+
+def _close(fd: int) -> None:
+    """Close `fd`; an OSError from close (EIO on write-back) is `LogUnavailable`. Does not retry.
+
+    Raised from a `finally`, it replaces any `LogUnavailable` already on its way out, which
+    keeps the type the caller sees the same either way.
+    """
+    try:
+        os.close(fd)
+    except OSError as e:
+        raise LogUnavailable(f"cannot close the log: {e}") from e
 
 
 def _write_line(fd: int, line: bytes) -> None:
