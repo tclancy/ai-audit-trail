@@ -699,3 +699,99 @@ def test_a_signer_that_works_is_still_the_normal_path(
     record = log.record(approve()).entry
     assert len(base64.b64decode(record.sig.removeprefix("ed25519:"))) == 64
     assert_signed(record)
+
+
+# --- genesis, boot and append convert the same failures (#33) --------------------
+
+
+def raise_oserror() -> str:
+    """Stand in for `_ulid` when `os.urandom` has no entropy source: always OSError."""
+    raise OSError("no entropy source")
+
+
+def test_an_entropy_failure_is_log_unavailable_at_genesis(
+    tmp_path: Path, signer: SoftwareSigner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`_ulid` raising OSError is LogUnavailable from `__init__`, and no file is created."""
+    import audittrail.log as log_module
+
+    monkeypatch.setattr(log_module, "_ulid", raise_oserror)
+    with pytest.raises(LogUnavailable) as caught:
+        open_log(tmp_path, signer)
+    assert any(type(c) is OSError for c in causes_of(caught.value))
+    assert not list(tmp_path.glob("*.jsonl"))
+
+
+def test_an_entropy_failure_inside_the_genesis_line_is_log_unavailable(
+    tmp_path: Path, signer: SoftwareSigner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The boot id draws, then the genesis `request_id` fails: LogUnavailable, no file."""
+    import audittrail.log as log_module
+
+    real_ulid = log_module._ulid
+    calls = iter([real_ulid])
+    monkeypatch.setattr(log_module, "_ulid", lambda: next(calls, raise_oserror)())
+    with pytest.raises(LogUnavailable) as caught:
+        open_log(tmp_path, signer)
+    assert any(type(c) is OSError for c in causes_of(caught.value))
+    assert not list(tmp_path.glob("*.jsonl"))
+
+
+def test_an_entropy_failure_is_log_unavailable_at_record(
+    tmp_path: Path, signer: SoftwareSigner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`_ulid` raising OSError is LogUnavailable from `record()`; the file is unchanged."""
+    import audittrail.log as log_module
+
+    log = open_log(tmp_path, signer)
+    before = lines_of(tmp_path)
+    monkeypatch.setattr(log_module, "_ulid", raise_oserror)
+    with pytest.raises(LogUnavailable) as caught:
+        log.record(approve())
+    assert any(type(c) is OSError for c in causes_of(caught.value))
+    assert lines_of(tmp_path) == before
+
+
+# Written out, not imported from `audittrail.log`: the test is the spec for the set, so
+# narrowing the module's tuple cannot narrow what is checked.
+BUILD_FAILURES = [
+    pytest.param(lambda: OSError("planted"), id="OSError"),
+    pytest.param(lambda: SchemaError("planted"), id="RecordError"),
+    pytest.param(lambda: SigningError("planted"), id="SigningError"),
+]
+
+
+@pytest.mark.parametrize("make_error", BUILD_FAILURES)
+@pytest.mark.parametrize("path", ["genesis", "boot", "append"])
+def test_every_write_path_converts_the_same_build_failures(
+    tmp_path: Path,
+    signer: SoftwareSigner,
+    monkeypatch: pytest.MonkeyPatch,
+    make_error: typing.Callable[[], Exception],
+    path: str,
+) -> None:
+    """Each failure raised while building a line is LogUnavailable on every path, nothing written.
+
+    `genesis` opens an empty directory, `boot` reopens an existing log (boot through
+    `_append`), `append` calls `record()`. The failure is planted in `_ts_now`, the first
+    call inside `_signed_line`, which all three share. The planted exception in the cause
+    chain proves it was this plant, not some other failure, that became LogUnavailable.
+    """
+    import audittrail.log as log_module
+
+    log = None if path == "genesis" else open_log(tmp_path, signer)
+    before = lines_of(tmp_path)
+    planted = make_error()
+
+    def fail() -> str:
+        """Raise the planted failure instead of reading the clock."""
+        raise planted
+
+    monkeypatch.setattr(log_module, "_ts_now", fail)
+    with pytest.raises(LogUnavailable) as caught:
+        if log is not None and path == "append":
+            log.record(approve())
+        else:
+            open_log(tmp_path, signer)
+    assert planted in causes_of(caught.value)
+    assert lines_of(tmp_path) == before

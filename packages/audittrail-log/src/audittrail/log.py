@@ -47,6 +47,9 @@ BOOT_CONFIG_TEMPLATE = (
 
 _CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
 
+_WRITE_FAILURES = (OSError, RecordError, SigningError)
+"""What genesis and `_append` turn into `LogUnavailable` (I2). One tuple, so they cannot drift."""
+
 
 class LogUnavailable(Exception):
     """The log could not be read, extended, or trusted. The caller rejects; nothing was written."""
@@ -166,7 +169,10 @@ class Log:
         self._boot_config_hash = _sha256_of(config.encode("ascii"))
         self._lock = threading.Lock()
         self._mono_base = time.monotonic_ns()
-        self._boot = _ulid()
+        try:
+            self._boot = _ulid()
+        except OSError as e:
+            raise LogUnavailable(f"cannot draw the boot id: {e}") from e
         self._head: Record | None = None
         self._head_hash = ZERO_HASH
         self._write_boot()
@@ -196,7 +202,7 @@ class Log:
         with self._lock:
             try:
                 line = self._signed_line("boot", self._boot_fields(), seq=0, prev=ZERO_HASH)
-            except (RecordError, SigningError) as e:
+            except _WRITE_FAILURES as e:
                 raise LogUnavailable(f"cannot build genesis: {e}") from e
             _create_with_line(self._path, line)
             self._head, self._head_hash = Record.from_line(line), _sha256_of(line)
@@ -241,7 +247,7 @@ class Log:
                     record_type, specific, seq=head.seq + 1, prev=self._head_hash
                 )
                 _write_line(fd, line)
-            except (OSError, RecordError, SigningError) as e:
+            except _WRITE_FAILURES as e:
                 raise LogUnavailable(f"cannot append to the log: {e}") from e
             finally:
                 os.close(fd)
@@ -269,9 +275,10 @@ class Log:
     ) -> bytes:
         """Build the full field set, sign its body, and return the canonical line (SPEC §3.2).
 
-        Raises `SigningError` when the signer misbehaves and `RecordError` when the fields do
-        not pass their rules; every caller must turn both into `LogUnavailable` (I2). Does not
-        write, and does not read the head.
+        Raises `SigningError` when the signer misbehaves, `RecordError` when the fields do not
+        pass their rules, and `OSError` when `os.urandom` fails; every caller must turn all three
+        into `LogUnavailable` (I2), via `_WRITE_FAILURES`. Does not write, and does not read the
+        head.
         """
         ts = _ts_now()
         if self._head is not None and ts < self._head.ts:

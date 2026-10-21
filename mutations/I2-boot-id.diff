@@ -1,0 +1,16 @@
+diff --git a/packages/audittrail-log/src/audittrail/log.py b/packages/audittrail-log/src/audittrail/log.py
+index 399e9eb..77533f3 100644
+--- a/packages/audittrail-log/src/audittrail/log.py
++++ b/packages/audittrail-log/src/audittrail/log.py
+@@ -169,10 +169,7 @@ class Log:
+         self._boot_config_hash = _sha256_of(config.encode("ascii"))
+         self._lock = threading.Lock()
+         self._mono_base = time.monotonic_ns()
+-        try:
+-            self._boot = _ulid()
+-        except OSError as e:
+-            raise LogUnavailable(f"cannot draw the boot id: {e}") from e
++        self._boot = _ulid()
+         self._head: Record | None = None
+         self._head_hash = ZERO_HASH
+         self._write_boot()
