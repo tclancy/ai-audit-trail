@@ -49,15 +49,22 @@ grep:
 
 # Applies each diff to the working tree and resets it afterwards, so it refuses
 # to run on a dirty tree rather than discard uncommitted work. With no diffs yet
-# (M0) it says so and passes.
+# (M0) it says so and passes. A kill is a suite that still collects and then fails;
+# a mutation that breaks import or collection is a broken diff, not evidence that a
+# test guards the mechanism (issue #27). The collect-only pass is what tells them
+# apart: under -x a collection error and a failed test both exit 1.
 mutations:
 	@[ -z "$$(git status --porcelain)" ] || { echo "mutations: working tree not clean; commit or stash first"; exit 1; }
 	@set -- mutations/*.diff; [ -e "$$1" ] || { echo "mutations: no diffs yet"; exit 0; }; \
 	for d in "$$@"; do \
 	  git apply --check "$$d" || { echo "stale mutation: $$d"; exit 1; }; \
 	  git apply "$$d"; \
-	  if PYTHONDONTWRITEBYTECODE=1 pytest -q -x -p no:cacheprovider >/dev/null 2>&1; then echo "mutation did not fail the suite: $$d"; git checkout -- . && git clean -fdq; exit 1; fi; \
-	  git checkout -- . && git clean -fdq; echo "ok: $$d"; \
+	  PYTHONDONTWRITEBYTECODE=1 pytest -q --co -p no:cacheprovider >/dev/null 2>&1; collected=$$?; \
+	  PYTHONDONTWRITEBYTECODE=1 pytest -q -x -p no:cacheprovider >/dev/null 2>&1; rc=$$?; \
+	  git checkout -- . && git clean -fdq; \
+	  [ $$collected -eq 0 ] || { echo "mutation broke the suite instead of failing it (collection exit $$collected): $$d"; exit 1; }; \
+	  [ $$rc -ne 0 ] || { echo "mutation did not fail the suite: $$d"; exit 1; }; \
+	  echo "ok: $$d"; \
 	done
 
 vectors:   # regenerates everything under spec/vectors plus spec/vectors.sha256; a vector change needs a spec version bump

@@ -1,0 +1,13 @@
+diff --git a/packages/audittrail-verify/src/audittrail_verify/canonical.py b/packages/audittrail-verify/src/audittrail_verify/canonical.py
+index 0f4f32d..b6da699 100644
+--- a/packages/audittrail-verify/src/audittrail_verify/canonical.py
++++ b/packages/audittrail-verify/src/audittrail_verify/canonical.py
+@@ -99,8 +99,6 @@ def parse_object(line: bytes) -> dict[str, Any]:
+         raise NotCanonical(f"not strict JSON: {e}") from e
+     if not isinstance(obj, dict):
+         raise NotCanonical("not a JSON object")
+-    if canonical_bytes(obj) != line:
+-        raise NotCanonical("not its own canonical form")
+     return obj
+ 
+ 

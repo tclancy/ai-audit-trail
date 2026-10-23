@@ -353,6 +353,32 @@ def test_rule_6_rejects_a_receipt_older_than_max_age(
         from_wire(approve_line, keyring)
 
 
+def test_rule_6_does_not_floor_the_age_to_whole_milliseconds(
+    approve_line: bytes, keyring: Keyring, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One microsecond past either bound is refused (issue #27); exactly at a bound it is not.
+
+    A microsecond is `datetime`'s resolution, so this is the tightest probe there is. The
+    age used to be rounded down to milliseconds first, which let a receipt up to 0.999 ms
+    too old through.
+    """
+
+    def now_is(offset: timedelta) -> None:
+        """Put the consumer's clock `offset` after the receipt's ts."""
+        monkeypatch.setattr("audittrail.approved._now", lambda: APPROVE_TS + offset)
+
+    now_is(timedelta(seconds=60))
+    assert from_wire(approve_line, keyring).entry.seq == 1
+    now_is(timedelta(seconds=60, microseconds=1))
+    with pytest.raises(GateError, match="older than max_age_s"):
+        from_wire(approve_line, keyring)
+    now_is(timedelta(seconds=-60))
+    assert from_wire(approve_line, keyring).entry.seq == 1
+    now_is(timedelta(seconds=-60, microseconds=-1))
+    with pytest.raises(GateError, match="ahead of now"):
+        from_wire(approve_line, keyring)
+
+
 def test_rule_6_rejects_a_receipt_dated_further_ahead_than_skew(
     approve_line: bytes, keyring: Keyring, monkeypatch: pytest.MonkeyPatch
 ) -> None:
