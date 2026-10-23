@@ -1,0 +1,13 @@
+diff --git a/packages/audittrail-log/src/audittrail/log.py b/packages/audittrail-log/src/audittrail/log.py
+index 03b31a3..441f559 100644
+--- a/packages/audittrail-log/src/audittrail/log.py
++++ b/packages/audittrail-log/src/audittrail/log.py
+@@ -198,7 +198,7 @@ class Log:
+         try:
+             others = [p for p in self._dir.glob(f"{self._log_id}.*.jsonl") if p != self._path]
+             exists = self._path.exists()
+-        except (OSError, ValueError) as e:
++        except OSError as e:
+             raise LogUnavailable(f"cannot read the log directory: {e}") from e
+         if others:
+             raise LogUnavailable("the directory holds more than the first log file")

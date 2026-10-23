@@ -1,0 +1,13 @@
+diff --git a/packages/audittrail-log/src/audittrail/log.py b/packages/audittrail-log/src/audittrail/log.py
+index efcf6ba..d521432 100644
+--- a/packages/audittrail-log/src/audittrail/log.py
++++ b/packages/audittrail-log/src/audittrail/log.py
+@@ -392,7 +392,7 @@ def _create_with_line(path: Path, line: bytes) -> None:
+     """
+     try:
+         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+-    except (OSError, ValueError) as e:
++    except OSError as e:
+         raise LogUnavailable(f"cannot create the log: {e}") from e
+     try:
+         _write_line(fd, line)

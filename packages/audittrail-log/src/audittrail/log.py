@@ -47,6 +47,9 @@ BOOT_CONFIG_TEMPLATE = (
 
 _CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
 
+_WRITE_FAILURES = (OSError, RecordError, SigningError)
+"""What genesis and `_append` turn into `LogUnavailable` (I2). One tuple, so they cannot drift."""
+
 
 class LogUnavailable(Exception):
     """The log could not be read, extended, or trusted. The caller rejects; nothing was written."""
@@ -166,7 +169,10 @@ class Log:
         self._boot_config_hash = _sha256_of(config.encode("ascii"))
         self._lock = threading.Lock()
         self._mono_base = time.monotonic_ns()
-        self._boot = _ulid()
+        try:
+            self._boot = _ulid()
+        except OSError as e:
+            raise LogUnavailable(f"cannot draw the boot id: {e}") from e
         self._head: Record | None = None
         self._head_hash = ZERO_HASH
         self._write_boot()
@@ -185,18 +191,24 @@ class Log:
         """Create the file with a genesis boot, or append a boot adopting the head on disk.
 
         Refuses a directory with any other file for this log_id. The existing-file path goes
-        through `_append`, so the head is read under the lock like every other write.
+        through `_append`, so the head is read under the lock like every other write. A path
+        `glob` refuses as a `ValueError` (an embedded NUL, on 3.13) is `LogUnavailable` like a
+        directory it cannot read.
         """
-        others = [p for p in self._dir.glob(f"{self._log_id}.*.jsonl") if p != self._path]
+        try:
+            others = [p for p in self._dir.glob(f"{self._log_id}.*.jsonl") if p != self._path]
+            exists = self._path.exists()
+        except (OSError, ValueError) as e:
+            raise LogUnavailable(f"cannot read the log directory: {e}") from e
         if others:
             raise LogUnavailable("the directory holds more than the first log file")
-        if self._path.exists():
+        if exists:
             self._append("boot", self._boot_fields())
             return
         with self._lock:
             try:
                 line = self._signed_line("boot", self._boot_fields(), seq=0, prev=ZERO_HASH)
-            except (RecordError, SigningError) as e:
+            except _WRITE_FAILURES as e:
                 raise LogUnavailable(f"cannot build genesis: {e}") from e
             _create_with_line(self._path, line)
             self._head, self._head_hash = Record.from_line(line), _sha256_of(line)
@@ -241,10 +253,10 @@ class Log:
                     record_type, specific, seq=head.seq + 1, prev=self._head_hash
                 )
                 _write_line(fd, line)
-            except (OSError, RecordError, SigningError) as e:
+            except _WRITE_FAILURES as e:
                 raise LogUnavailable(f"cannot append to the log: {e}") from e
             finally:
-                os.close(fd)
+                _close(fd)
             entry = Record.from_line(line)
             self._head, self._head_hash = entry, _sha256_of(line)
             return Receipt(line, entry)
@@ -269,9 +281,10 @@ class Log:
     ) -> bytes:
         """Build the full field set, sign its body, and return the canonical line (SPEC §3.2).
 
-        Raises `SigningError` when the signer misbehaves and `RecordError` when the fields do
-        not pass their rules; every caller must turn both into `LogUnavailable` (I2). Does not
-        write, and does not read the head.
+        Raises `SigningError` when the signer misbehaves, `RecordError` when the fields do not
+        pass their rules, and `OSError` when `os.urandom` fails; every caller must turn all three
+        into `LogUnavailable` (I2), via `_WRITE_FAILURES`. Does not write, and does not read the
+        head.
         """
         ts = _ts_now()
         if self._head is not None and ts < self._head.ts:
@@ -374,17 +387,21 @@ def _read_head_fd(fd: int) -> tuple[Record, str] | None:
 
 
 def _create_with_line(path: Path, line: bytes) -> None:
-    """Create the file exclusively with one line, fsync it, then fsync the directory."""
+    """Create the file exclusively with one line, fsync it, then fsync the directory.
+
+    A path `os.open` refuses as a `ValueError` (an embedded NUL) is `LogUnavailable` like any
+    other path it cannot create. Does not remove the file if the write after the create fails.
+    """
     try:
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    except OSError as e:
+    except (OSError, ValueError) as e:
         raise LogUnavailable(f"cannot create the log: {e}") from e
     try:
         _write_line(fd, line)
     except OSError as e:
         raise LogUnavailable(f"cannot write genesis: {e}") from e
     finally:
-        os.close(fd)
+        _close(fd)
     try:
         dir_fd = os.open(path.parent, os.O_RDONLY)
         try:
@@ -393,6 +410,18 @@ def _create_with_line(path: Path, line: bytes) -> None:
             os.close(dir_fd)
     except OSError as e:
         raise LogUnavailable(f"cannot fsync the log directory: {e}") from e
+
+
+def _close(fd: int) -> None:
+    """Close `fd`; an OSError from close (EIO on write-back) is `LogUnavailable`. Does not retry.
+
+    Raised from a `finally`, it replaces any `LogUnavailable` already on its way out, which
+    keeps the type the caller sees the same either way.
+    """
+    try:
+        os.close(fd)
+    except OSError as e:
+        raise LogUnavailable(f"cannot close the log: {e}") from e
 
 
 def _write_line(fd: int, line: bytes) -> None:

@@ -699,3 +699,187 @@ def test_a_signer_that_works_is_still_the_normal_path(
     record = log.record(approve()).entry
     assert len(base64.b64decode(record.sig.removeprefix("ed25519:"))) == 64
     assert_signed(record)
+
+
+# --- genesis, boot and append convert the same failures (#33) --------------------
+
+
+def raise_oserror() -> str:
+    """Stand in for `_ulid` when `os.urandom` has no entropy source: always OSError."""
+    raise OSError("no entropy source")
+
+
+def test_an_entropy_failure_is_log_unavailable_at_genesis(
+    tmp_path: Path, signer: SoftwareSigner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`_ulid` raising OSError is LogUnavailable from `__init__`, and no file is created."""
+    import audittrail.log as log_module
+
+    monkeypatch.setattr(log_module, "_ulid", raise_oserror)
+    with pytest.raises(LogUnavailable) as caught:
+        open_log(tmp_path, signer)
+    assert any(type(c) is OSError for c in causes_of(caught.value))
+    assert not list(tmp_path.glob("*.jsonl"))
+
+
+def test_an_entropy_failure_inside_the_genesis_line_is_log_unavailable(
+    tmp_path: Path, signer: SoftwareSigner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The boot id draws, then the genesis `request_id` fails: LogUnavailable, no file."""
+    import audittrail.log as log_module
+
+    real_ulid = log_module._ulid
+    calls = iter([real_ulid])
+    monkeypatch.setattr(log_module, "_ulid", lambda: next(calls, raise_oserror)())
+    with pytest.raises(LogUnavailable) as caught:
+        open_log(tmp_path, signer)
+    assert any(type(c) is OSError for c in causes_of(caught.value))
+    assert not list(tmp_path.glob("*.jsonl"))
+
+
+def test_an_entropy_failure_is_log_unavailable_at_record(
+    tmp_path: Path, signer: SoftwareSigner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`_ulid` raising OSError is LogUnavailable from `record()`; the file is unchanged."""
+    import audittrail.log as log_module
+
+    log = open_log(tmp_path, signer)
+    before = lines_of(tmp_path)
+    monkeypatch.setattr(log_module, "_ulid", raise_oserror)
+    with pytest.raises(LogUnavailable) as caught:
+        log.record(approve())
+    assert any(type(c) is OSError for c in causes_of(caught.value))
+    assert lines_of(tmp_path) == before
+
+
+# Written out, not imported from `audittrail.log`: the test is the spec for the set, so
+# narrowing the module's tuple cannot narrow what is checked.
+BUILD_FAILURES = [
+    pytest.param(lambda: OSError("planted"), id="OSError"),
+    pytest.param(lambda: SchemaError("planted"), id="RecordError"),
+    pytest.param(lambda: SigningError("planted"), id="SigningError"),
+]
+
+
+@pytest.mark.parametrize("make_error", BUILD_FAILURES)
+@pytest.mark.parametrize("path", ["genesis", "boot", "append"])
+def test_every_write_path_converts_the_same_build_failures(
+    tmp_path: Path,
+    signer: SoftwareSigner,
+    monkeypatch: pytest.MonkeyPatch,
+    make_error: typing.Callable[[], Exception],
+    path: str,
+) -> None:
+    """Each failure raised while building a line is LogUnavailable on every path, nothing written.
+
+    `genesis` opens an empty directory, `boot` reopens an existing log (boot through
+    `_append`), `append` calls `record()`. The failure is planted in `_ts_now`, the first
+    call inside `_signed_line`, which all three share. The planted exception in the cause
+    chain proves it was this plant, not some other failure, that became LogUnavailable.
+    """
+    import audittrail.log as log_module
+
+    log = None if path == "genesis" else open_log(tmp_path, signer)
+    before = lines_of(tmp_path)
+    planted = make_error()
+
+    def fail() -> str:
+        """Raise the planted failure instead of reading the clock."""
+        raise planted
+
+    monkeypatch.setattr(log_module, "_ts_now", fail)
+    with pytest.raises(LogUnavailable) as caught:
+        if log is not None and path == "append":
+            log.record(approve())
+        else:
+            open_log(tmp_path, signer)
+    assert planted in causes_of(caught.value)
+    assert lines_of(tmp_path) == before
+
+
+# --- failures outside the build: directory reads, close, odd paths ------------------
+
+
+@pytest.mark.parametrize("existing", [False, True], ids=["genesis", "boot"])
+def test_an_unsearchable_directory_is_log_unavailable(
+    tmp_path: Path, signer: SoftwareSigner, existing: bool
+) -> None:
+    """A directory that can be listed but not searched is LogUnavailable; the file is unchanged."""
+    if os.geteuid() == 0:
+        pytest.fail("this test needs a non-root user; root ignores directory modes")
+    if existing:
+        open_log(tmp_path, signer)
+    before = lines_of(tmp_path)
+    tmp_path.chmod(0o600)
+    try:
+        with pytest.raises(LogUnavailable) as caught:
+            open_log(tmp_path, signer)
+    finally:
+        tmp_path.chmod(0o700)
+    assert any(isinstance(c, PermissionError) for c in causes_of(caught.value))
+    assert lines_of(tmp_path) == before
+
+
+def test_a_directory_path_with_a_nul_is_log_unavailable(
+    tmp_path: Path, signer: SoftwareSigner
+) -> None:
+    """A path `os.open` refuses with ValueError is LogUnavailable, and nothing is created."""
+    with pytest.raises(LogUnavailable):
+        open_log(tmp_path / "a\0b", signer)
+    assert not list(tmp_path.iterdir())
+
+
+def test_a_glob_that_refuses_the_directory_is_log_unavailable(
+    tmp_path: Path, signer: SoftwareSigner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`Path.glob` raising ValueError is LogUnavailable from `__init__`, and nothing is created.
+
+    Planted rather than driven by a real NUL: on 3.12 `glob` swallows the NUL and `os.open`
+    refuses it, on 3.13 `glob` itself raises. The plant pins the `glob` case on both.
+    """
+    planted = ValueError("scandir: embedded null character in path")
+
+    def refuse(self: Path, pattern: str, **kwargs: object) -> typing.Iterator[Path]:
+        """Refuse the directory the way 3.13's glob does for a NUL."""
+        raise planted
+
+    monkeypatch.setattr(Path, "glob", refuse)
+    with pytest.raises(LogUnavailable) as caught:
+        open_log(tmp_path, signer)
+    assert planted in causes_of(caught.value)
+    assert not list(tmp_path.iterdir())
+
+
+def closing_then_eio(real_close: typing.Callable[[int], None]) -> typing.Callable[[int], None]:
+    """An `os.close` that really closes, then reports EIO, as close does on failed write-back."""
+
+    def close(fd: int) -> None:
+        """Close for real, then raise EIO."""
+        real_close(fd)
+        raise OSError(5, "close EIO")
+
+    return close
+
+
+def test_a_failing_close_is_log_unavailable_at_genesis(
+    tmp_path: Path, signer: SoftwareSigner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """EIO from close after the genesis write is LogUnavailable, not a raw OSError."""
+    with monkeypatch.context() as m:
+        m.setattr(os, "close", closing_then_eio(os.close))
+        with pytest.raises(LogUnavailable):
+            open_log(tmp_path, signer)
+
+
+@pytest.mark.parametrize("signer_works", [True, False], ids=["after-write", "over-refusal"])
+def test_a_failing_close_is_log_unavailable_at_record(
+    tmp_path: Path, signer: SoftwareSigner, monkeypatch: pytest.MonkeyPatch, signer_works: bool
+) -> None:
+    """EIO from close is LogUnavailable whether the append wrote or was already refusing."""
+    log = open_log(tmp_path, signer)
+    if not signer_works:
+        log._signer = FailingSigner()
+    with monkeypatch.context() as m:
+        m.setattr(os, "close", closing_then_eio(os.close))
+        with pytest.raises(LogUnavailable):
+            log.record(approve())

@@ -1,0 +1,18 @@
+diff --git a/packages/audittrail-log/src/audittrail/log.py b/packages/audittrail-log/src/audittrail/log.py
+index 03b31a3..d968194 100644
+--- a/packages/audittrail-log/src/audittrail/log.py
++++ b/packages/audittrail-log/src/audittrail/log.py
+@@ -195,11 +195,8 @@ class Log:
+         `glob` refuses as a `ValueError` (an embedded NUL, on 3.13) is `LogUnavailable` like a
+         directory it cannot read.
+         """
+-        try:
+-            others = [p for p in self._dir.glob(f"{self._log_id}.*.jsonl") if p != self._path]
+-            exists = self._path.exists()
+-        except (OSError, ValueError) as e:
+-            raise LogUnavailable(f"cannot read the log directory: {e}") from e
++        others = [p for p in self._dir.glob(f"{self._log_id}.*.jsonl") if p != self._path]
++        exists = self._path.exists()
+         if others:
+             raise LogUnavailable("the directory holds more than the first log file")
+         if exists:

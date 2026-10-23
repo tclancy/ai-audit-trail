@@ -1,0 +1,13 @@
+diff --git a/packages/audittrail-log/src/audittrail/log.py b/packages/audittrail-log/src/audittrail/log.py
+index 399e9eb..8861261 100644
+--- a/packages/audittrail-log/src/audittrail/log.py
++++ b/packages/audittrail-log/src/audittrail/log.py
+@@ -202,7 +202,7 @@ class Log:
+         with self._lock:
+             try:
+                 line = self._signed_line("boot", self._boot_fields(), seq=0, prev=ZERO_HASH)
+-            except _WRITE_FAILURES as e:
++            except (RecordError, SigningError) as e:
+                 raise LogUnavailable(f"cannot build genesis: {e}") from e
+             _create_with_line(self._path, line)
+             self._head, self._head_hash = Record.from_line(line), _sha256_of(line)
