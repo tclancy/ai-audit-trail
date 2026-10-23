@@ -191,12 +191,14 @@ class Log:
         """Create the file with a genesis boot, or append a boot adopting the head on disk.
 
         Refuses a directory with any other file for this log_id. The existing-file path goes
-        through `_append`, so the head is read under the lock like every other write.
+        through `_append`, so the head is read under the lock like every other write. A path
+        `glob` refuses as a `ValueError` (an embedded NUL, on 3.13) is `LogUnavailable` like a
+        directory it cannot read.
         """
         try:
             others = [p for p in self._dir.glob(f"{self._log_id}.*.jsonl") if p != self._path]
             exists = self._path.exists()
-        except OSError as e:
+        except (OSError, ValueError) as e:
             raise LogUnavailable(f"cannot read the log directory: {e}") from e
         if others:
             raise LogUnavailable("the directory holds more than the first log file")

@@ -829,6 +829,27 @@ def test_a_directory_path_with_a_nul_is_log_unavailable(
     assert not list(tmp_path.iterdir())
 
 
+def test_a_glob_that_refuses_the_directory_is_log_unavailable(
+    tmp_path: Path, signer: SoftwareSigner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`Path.glob` raising ValueError is LogUnavailable from `__init__`, and nothing is created.
+
+    Planted rather than driven by a real NUL: on 3.12 `glob` swallows the NUL and `os.open`
+    refuses it, on 3.13 `glob` itself raises. The plant pins the `glob` case on both.
+    """
+    planted = ValueError("scandir: embedded null character in path")
+
+    def refuse(self: Path, pattern: str, **kwargs: object) -> typing.Iterator[Path]:
+        """Refuse the directory the way 3.13's glob does for a NUL."""
+        raise planted
+
+    monkeypatch.setattr(Path, "glob", refuse)
+    with pytest.raises(LogUnavailable) as caught:
+        open_log(tmp_path, signer)
+    assert planted in causes_of(caught.value)
+    assert not list(tmp_path.iterdir())
+
+
 def closing_then_eio(real_close: typing.Callable[[int], None]) -> typing.Callable[[int], None]:
     """An `os.close` that really closes, then reports EIO, as close does on failed write-back."""
 
