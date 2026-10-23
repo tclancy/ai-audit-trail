@@ -1,3 +1,5 @@
 # Mutations
 
 One unified diff per mechanism, named for the invariant it protects (`I1.diff`, `I2.diff`, …; a suffix such as `I3-depth.diff` when one invariant has several mechanisms), that deletes or disables the mechanism. CI applies each in a throwaway checkout and asserts the test suite goes red, and separately asserts each still applies cleanly to HEAD (I15). A mutation that no longer applies is a CI failure, not a cleanup task: it means a refactor disarmed a tripwire.
+
+"Red" means the suite still collects (`pytest --co` exits 0 with the diff applied) and then fails. A diff that leaves the suite unable to import or collect is reported as a broken mutation and fails the run too; it proves nothing about which test guards the mechanism. The runner checks collection separately because under `-x` a collection error and a failed test both exit 1. One class still passes as a kill: a diff that collects but makes every test error at fixture setup also exits 1. A diff that does that is a broken diff; the reviewer of a new diff confirms its red run reports `N failed`, not only errors.

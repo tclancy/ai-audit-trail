@@ -218,19 +218,21 @@ def _rule_5_bound_to_candidate(record: Record, candidate: Candidate) -> None:
 
 
 def _rule_6_fresh(record: Record, max_age_s: int, skew_s: int) -> None:
-    """`-skew_s <= now - ts <= max_age_s`, in whole milliseconds. A `ts` that is no date is refused.
+    """`-skew_s <= now - ts <= max_age_s`, in whole microseconds. A `ts` that is no date is refused.
 
     Bounded on both sides (issue #17): a receipt dated more than `skew_s` ahead of `now` is as
-    refused as one older than `max_age_s`. Does not read any clock but the consumer's.
+    refused as one older than `max_age_s`. Microseconds are `datetime`'s own resolution, so
+    the division rounds nothing away (issue #27: flooring to milliseconds admitted a receipt
+    up to 0.999 ms too old). Does not read any clock but the consumer's.
     """
     try:
         ts = datetime.strptime(record.ts, _TS_FORMAT).replace(tzinfo=UTC)
     except ValueError as e:
         raise GateError("rule 6: ts is not a date") from e
-    age_ms = (_now() - ts) // timedelta(milliseconds=1)
-    if age_ms > max_age_s * 1000:
+    age_us = (_now() - ts) // timedelta(microseconds=1)
+    if age_us > max_age_s * 1_000_000:
         raise GateError("rule 6: receipt is older than max_age_s")
-    if age_ms < -skew_s * 1000:
+    if age_us < -skew_s * 1_000_000:
         raise GateError("rule 6: receipt is dated more than skew_s ahead of now")
 
 
