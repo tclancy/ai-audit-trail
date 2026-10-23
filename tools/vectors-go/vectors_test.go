@@ -76,8 +76,8 @@ func TestPositiveVectorsPassEveryCheck(t *testing.T) {
 func TestNegativeVectorsFailAtTheirExpectedCheck(t *testing.T) {
 	out := generated(t)
 	dirs := vectorDirs(t, out, "negative")
-	if len(dirs) != 21 {
-		t.Fatalf("want 21 negative vectors, got %d", len(dirs))
+	if len(dirs) != 23 {
+		t.Fatalf("want 23 negative vectors, got %d", len(dirs))
 	}
 	for _, dir := range dirs {
 		raw, _ := os.ReadFile(filepath.Join(dir, "vector.expect"))
@@ -120,6 +120,41 @@ func TestNestingDepthCountsContainersOutsideStrings(t *testing.T) {
 	for _, c := range cases {
 		if got := nestingDepth([]byte(c.line)); got != c.depth {
 			t.Errorf("%s: depth %d, want %d", c.line, got, c.depth)
+		}
+	}
+}
+
+// A JCS-canonical float such as 0.5 survives jcs.Transform unchanged, so the
+// number-token scan is the only thing that makes it check 1 as SPEC §5 says.
+func TestRoundTripsRefusesEveryNumberThatIsNotAnIntegerLiteral(t *testing.T) {
+	cases := []struct {
+		line string
+		ok   bool
+	}{
+		{`{"mono":0}`, true},
+		{`{"mono":9007199254740991}`, true},
+		{`{"mono":0.5}`, false},
+		{`{"mono":1.0}`, false},
+		{`{"mono":1e3}`, false},
+		{`{"mono":1E3}`, false},
+		{`{"mono":1e+21}`, false}, // jcs prints these two verbatim: only the scan refuses them
+		{`{"mono":1e-7}`, false},
+		{`{"mono":-0}`, false},
+		{`{"a":[0.5]}`, false},
+		{`{"a":{"b":2.5}}`, false},
+		{`{"a":"0.5"}`, true},
+		{`{"a":"1e3"}`, true},
+		{`{"a":"\"0.5"}`, true},
+		{`{"a":"\\","b":0.5}`, false},
+		{`{"a":-5}`, true}, // an integer out of range is check 2, as in the Python
+		{`{"a":true}`, true},
+		{`{"a":false}`, true},
+		{`{"a":null}`, true},
+		{`{"a":[true,0.5]}`, false},
+	}
+	for _, c := range cases {
+		if got := roundTrips([]byte(c.line)); got != c.ok {
+			t.Errorf("%s: roundTrips %v, want %v", c.line, got, c.ok)
 		}
 	}
 }
@@ -211,8 +246,8 @@ func firstFailingCheck(t *testing.T, out, dir string, lines [][]byte) int {
 }
 
 // roundTrips is check 1: ASCII only, within the SPEC §3.1 depth and §3.2
-// length bounds (counted over the bytes before parsing), and
-// JCS(parse(line)) == line.
+// length bounds (counted over the bytes before parsing), every number an
+// integer literal, and JCS(parse(line)) == line.
 func roundTrips(line []byte) bool {
 	for _, c := range line {
 		if c > 0x7e || c < 0x20 {
@@ -222,8 +257,46 @@ func roundTrips(line []byte) bool {
 	if len(line) > maxLineBytes || nestingDepth(line) > maxNestingDepth {
 		return false
 	}
+	if !numbersAreIntegerLiterals(line) {
+		return false
+	}
 	got, err := jcs.Transform(line)
 	return err == nil && bytes.Equal(got, line)
+}
+
+// integerLiteral is the only number shape SPEC §5 check 1's strict parse accepts.
+var integerLiteral = regexp.MustCompile(`^-?(?:0|[1-9][0-9]*)$`)
+
+// numbersAreIntegerLiterals reports whether every number token outside string
+// literals is an integer literal. A token starts at a digit or minus and runs
+// over the JSON number alphabet, so true/false/null are not tokens and stay
+// check 2, as in the Python. jcs.Transform prints a canonical float such as
+// 0.5 unchanged, so the round trip alone cannot refuse it (issue #21).
+func numbersAreIntegerLiterals(line []byte) bool {
+	inString, escaped := false, false
+	var token []byte
+	for _, c := range line {
+		switch {
+		case inString && escaped:
+			escaped = false
+		case inString && c == '\\':
+			escaped = true
+		case inString && c == '"':
+			inString = false
+		case inString:
+		case c == '"':
+			inString = true
+		case len(token) > 0 && strings.IndexByte("-+.0123456789eE", c) >= 0,
+			len(token) == 0 && (c == '-' || ('0' <= c && c <= '9')):
+			token = append(token, c)
+			continue
+		}
+		if len(token) > 0 && !integerLiteral.Match(token) {
+			return false
+		}
+		token = token[:0]
+	}
+	return len(token) == 0 || integerLiteral.Match(token)
 }
 
 // nestingDepth is SPEC §3.1's structural depth: `{` and `[` outside string

@@ -61,6 +61,14 @@ KEY_MATERIAL = [
 LOG_PATHSPECS = [f":(icase)*.{ext}" for ext in ("jsonl", "ndjson", "log", "pem", "key")]
 """Committed files scanned with KEY_MATERIAL besides the sources; extension case is ignored."""
 
+VERIFIER_TESTS = ROOT / "packages" / "audittrail-verify" / "tests"
+SIGNING = [
+    r"\.sign\s*\(",
+    r"\bEd25519PrivateKey\b",
+]
+"""Run over the verifier's tests only: they read committed files under `spec/` and never sign
+(CLAUDE.md rule 4; issue #21). A signed line a test needs is a vector from `tools/vectors-go`."""
+
 
 class SpecError(Exception):
     """SPEC.md lacks something a grep test depends on. Does not mean the README is wrong."""
@@ -87,6 +95,11 @@ def committed_logs(root: Path = ROOT) -> list[Path]:
         capture_output=True,
     ).stdout.decode("utf-8")
     return [root / rel for rel in listed.split("\0") if rel and not rel.startswith("spec/")]
+
+
+def verifier_test_files() -> list[Path]:
+    """Every `*.py` under the verifier's tests. Does not look at its sources or other packages."""
+    return sorted(VERIFIER_TESTS.rglob("*.py"))
 
 
 def scan_files(files: list[Path], patterns: list[str]) -> list[str]:
@@ -150,6 +163,7 @@ def main() -> int:
         scan(BYPASS)
         + scan(KEY_MATERIAL)
         + scan_files(committed_logs(), KEY_MATERIAL)
+        + scan_files(verifier_test_files(), SIGNING)
         + readme_drift(spec_text, readme_text)
     )
     for h in hits:

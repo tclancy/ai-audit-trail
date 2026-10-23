@@ -249,6 +249,65 @@ def test_no_key_pattern_hits_the_committed_logs(pattern: str) -> None:
     assert grep_tests.scan_files(grep_tests.committed_logs(), [pattern]) == []
 
 
+SIGNING_SAMPLES = [
+    ("sign call", "sig = key.sign(DOMAIN + body)\n"),
+    ("sign call spaced", "sig = key.sign (body)\n"),
+    (
+        "private key import",
+        "from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey\n",
+    ),
+    ("private key from seed", "k = Ed25519PrivateKey.from_private_bytes(seed_bytes)\n"),
+]
+
+SIGNING_CLEAN_SAMPLES = [
+    "signature = base64.b64decode(obj['sig'])\n",
+    "pub.verify(signature, DOMAIN + body)\n",
+    "def sign_in(user):\n    return user.signature\n",
+    "x = design(a)\nkey = Ed25519PublicKey.from_public_bytes(raw)\n",
+    "text = 'key.sign('\n",
+]
+
+
+@pytest.mark.parametrize(("kind", "text"), SIGNING_SAMPLES)
+def test_each_signing_shape_is_a_hit(tmp_path: Path, kind: str, text: str) -> None:
+    """Every way a test could sign with the published seed is reported by SIGNING."""
+    assert scan_text(tmp_path, text, grep_tests.SIGNING) != [], kind
+
+
+@pytest.mark.parametrize("text", SIGNING_CLEAN_SAMPLES[:-1])
+def test_signing_lookalikes_are_not_hits(tmp_path: Path, text: str) -> None:
+    """Decoding a signature, verifying, `sign_in`, `design` and the public key class pass."""
+    assert scan_text(tmp_path, text, grep_tests.SIGNING) == []
+
+
+def test_a_sign_call_inside_a_string_is_still_a_hit(tmp_path: Path) -> None:
+    """The scan is textual on purpose: a quoted `.sign(` is a hit too; nothing hides in a string."""
+    assert scan_text(tmp_path, SIGNING_CLEAN_SAMPLES[-1], grep_tests.SIGNING) != []
+
+
+def test_verifier_test_files_are_the_verifiers_tests_only() -> None:
+    """Every scanned file is a .py under packages/audittrail-verify/tests, and there are some."""
+    files = grep_tests.verifier_test_files()
+    assert files
+    assert all(f.suffix == ".py" and grep_tests.VERIFIER_TESTS in f.parents for f in files)
+
+
+@pytest.mark.parametrize("pattern", grep_tests.SIGNING)
+def test_the_committed_verifier_tests_never_sign(pattern: str) -> None:
+    """The verifier's tests read `spec/` and sign nothing (CLAUDE.md rule 4), pattern by pattern."""
+    assert grep_tests.scan_files(grep_tests.verifier_test_files(), [pattern]) == []
+
+
+def test_main_scans_the_verifier_tests(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """main() exits non-zero when a verifier test signs."""
+    test = tmp_path / "test_x.py"
+    test.write_text("sig = key.sign(body)\n", encoding="utf-8")
+    monkeypatch.setattr(grep_tests, "verifier_test_files", lambda: [test])
+    assert grep_tests.main() == 1
+    test.write_text("pub.verify(sig, body)\n", encoding="utf-8")
+    assert grep_tests.main() == 0
+
+
 def git(root: Path, *args: str) -> None:
     """Run git in `root` with a fixed identity; raise on failure."""
     subprocess.run(  # noqa: S603

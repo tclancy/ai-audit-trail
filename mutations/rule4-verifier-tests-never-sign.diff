@@ -1,0 +1,12 @@
+diff --git a/tools/grep_tests.py b/tools/grep_tests.py
+index 7008c46..dd589b6 100644
+--- a/tools/grep_tests.py
++++ b/tools/grep_tests.py
+@@ -163,7 +163,6 @@ def main() -> int:
+         scan(BYPASS)
+         + scan(KEY_MATERIAL)
+         + scan_files(committed_logs(), KEY_MATERIAL)
+-        + scan_files(verifier_test_files(), SIGNING)
+         + readme_drift(spec_text, readme_text)
+     )
+     for h in hits:
