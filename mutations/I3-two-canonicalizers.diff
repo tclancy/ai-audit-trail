@@ -1,0 +1,13 @@
+diff --git a/packages/audittrail-verify/src/audittrail_verify/canonical.py b/packages/audittrail-verify/src/audittrail_verify/canonical.py
+index 0f4f32d..863edb9 100644
+--- a/packages/audittrail-verify/src/audittrail_verify/canonical.py
++++ b/packages/audittrail-verify/src/audittrail_verify/canonical.py
+@@ -161,7 +161,7 @@ def _require_alphabet(obj: object) -> None:
+         elif value is None or isinstance(value, bool):
+             continue
+         elif type(value) is int:
+-            if abs(value) >= 10**21 or decimal.Decimal(repr(float(value))) != value:
++            if abs(value) >= 10**22 or decimal.Decimal(repr(float(value))) != value:
+                 raise NotCanonical("integer JCS would not print verbatim")
+         else:
+             raise NotCanonical(f"{type(value).__name__} is outside the canonical alphabet")
