@@ -1,0 +1,13 @@
+diff --git a/apps/gate-stub/src/gate_stub/__init__.py b/apps/gate-stub/src/gate_stub/__init__.py
+index f78ffbc..5436049 100644
+--- a/apps/gate-stub/src/gate_stub/__init__.py
++++ b/apps/gate-stub/src/gate_stub/__init__.py
+@@ -58,7 +58,7 @@ class Gate:
+         Raises `LogUnavailable` instead of answering when the log refuses; never returns a
+         line that is not on disk. Reads nothing from the body but its bytes.
+         """
+-        return self._log.record(_decision(body)).line
++        raise LogUnavailable("record() call deleted: the gate has no log")
+ 
+ 
+ def _decision(body: bytes) -> DecisionFields:

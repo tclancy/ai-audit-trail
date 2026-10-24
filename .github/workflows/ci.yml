@@ -144,6 +144,15 @@ jobs:
       # Checks each diff applies (I15) and turns the suite red; passes with no diffs (M0).
       - run: make mutations
 
+  # The M1 done check (PLAN.md): the gate serves, the consumer acts on one receipt and refuses
+  # a tampered one, and the verifier accepts the resulting log. Docker and compose are on the
+  # runner image; the exit code is the verifier wrapper's.
+  skeleton:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: make skeleton
+
   secrets:
     runs-on: ubuntu-24.04
     steps:
