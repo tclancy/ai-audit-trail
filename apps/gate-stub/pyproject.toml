@@ -1,0 +1,17 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "gate-stub"
+version = "0.0.0"
+description = "ai-audit-trail: minimal reference gate (M1 walking skeleton)"
+requires-python = ">=3.12"
+license = "Apache-2.0"
+dependencies = ["audittrail-log==0.0.0", "cryptography>=43,<44"]
+
+[project.scripts]
+gate-stub = "gate_stub:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/gate_stub"]

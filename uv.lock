@@ -8,6 +8,8 @@ members = [
     "audittrail-log",
     "audittrail-testkit",
     "audittrail-verify",
+    "consumer-stub",
+    "gate-stub",
 ]
 
 [[package]]
@@ -21,6 +23,8 @@ dev = [
     { name = "audittrail-testkit" },
     { name = "audittrail-verify" },
     { name = "check-jsonschema" },
+    { name = "consumer-stub" },
+    { name = "gate-stub" },
     { name = "hypothesis" },
     { name = "import-linter" },
     { name = "interrogate" },
@@ -39,6 +43,8 @@ dev = [
     { name = "audittrail-testkit", editable = "packages/audittrail-testkit" },
     { name = "audittrail-verify", editable = "packages/audittrail-verify" },
     { name = "check-jsonschema", specifier = "==0.29.4" },
+    { name = "consumer-stub", editable = "apps/consumer-stub" },
+    { name = "gate-stub", editable = "apps/gate-stub" },
     { name = "hypothesis", specifier = "==6.112.1" },
     { name = "import-linter", specifier = "==2.1" },
     { name = "interrogate", specifier = "==1.7.0" },
@@ -466,6 +472,17 @@ wheels = [
 ]
 
 [[package]]
+name = "consumer-stub"
+version = "0.0.0"
+source = { editable = "apps/consumer-stub" }
+dependencies = [
+    { name = "audittrail-log" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "audittrail-log", editable = "packages/audittrail-log" }]
+
+[[package]]
 name = "coverage"
 version = "7.16.2"
 source = { registry = "https://pypi.org/simple" }
@@ -669,6 +686,21 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/c3/6e/2f4e13e373bb49e68c02c51ceadd22d172715a06716f9299d9df01b6ddb2/Flask-Login-0.6.3.tar.gz", hash = "sha256:5e23d14a607ef12806c699590b89d0f0e0d67baeec599d75947bf9c147330333", size = 48834, upload-time = "2023-10-30T14:53:21.151Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/59/f5/67e9cc5c2036f58115f9fe0f00d203cf6780c3ff8ae0e705e7a9d9e8ff9e/Flask_Login-0.6.3-py3-none-any.whl", hash = "sha256:849b25b82a436bf830a054e74214074af59097171562ab10bfa999e6b78aae5d", size = 17303, upload-time = "2023-10-30T14:53:19.636Z" },
+]
+
+[[package]]
+name = "gate-stub"
+version = "0.0.0"
+source = { editable = "apps/gate-stub" }
+dependencies = [
+    { name = "audittrail-log" },
+    { name = "cryptography" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "audittrail-log", editable = "packages/audittrail-log" },
+    { name = "cryptography", specifier = ">=43,<44" },
 ]
 
 [[package]]

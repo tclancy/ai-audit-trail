@@ -31,7 +31,7 @@ lint:
 # at least one .py file. Derived, so a new app is checked as soon as it has code.
 PY_ROOTS = $(shell for d in packages/* apps/* tools; do \
   [ -n "$$(find $$d -name '*.py' -print -quit)" ] && echo $$d; done)
-SRC_PATH = $(shell ls -d packages/*/src | paste -sd: -)
+SRC_PATH = $(shell ls -d packages/*/src apps/*/src | paste -sd: -)
 
 # One mypy run per root, so test modules with the same basename in two packages
 # do not collide.
@@ -77,8 +77,17 @@ vectors:   # regenerates everything under spec/vectors plus spec/vectors.sha256;
 vectors-test:
 	cd tools/vectors-go && go test -count=1 ./...
 
-skeleton:   # M1
-	docker compose -f deploy/compose.yml up --abort-on-container-exit --exit-code-from verifier
+# M1 walking skeleton: build the image, bring the gate up and wait for its health check,
+# run the consumer's scenario once, then the verifier over the log; the verifier's verdict
+# is the exit code. Volumes are removed afterwards so every run starts from genesis with a
+# freshly drawn dev key (a second boot under a new key would fail check 5 by design).
+COMPOSE = docker compose -f deploy/compose.yml
+skeleton:
+	$(COMPOSE) down --volumes --remove-orphans
+	$(COMPOSE) up --build --detach --wait gate-stub \
+	  && $(COMPOSE) run --rm consumer-stub \
+	  && $(COMPOSE) run --rm verifier; rc=$$?; \
+	  $(COMPOSE) down --volumes; exit $$rc
 
 demo:       # M5
 	docker compose -f deploy/compose.yml -f deploy/compose.demo.yml up --abort-on-container-exit --exit-code-from verifier

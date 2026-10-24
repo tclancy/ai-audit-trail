@@ -1,0 +1,59 @@
+# M1 walking skeleton (TASKS.md: "two-service compose; make skeleton").
+#
+# gate-stub serves decisions; consumer-stub runs the scenario once (act on one receipt,
+# refuse its tampered copy, refuse its replay); verifier reads the log and keyring
+# read-only and its verdict is the exit code of `make skeleton`. One image, three entry
+# points. Named volumes carry the log and the keyring between the services and nothing
+# else; the host sees neither. AUDITTRAIL_DEV=1 is set here and nowhere else (SPEC §9.3), so
+# the production posture is the default everywhere outside this file. The explicit networks
+# of SPEC §9.2 arrive with the demo in M5.
+services:
+  gate-stub:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    image: ai-audit-trail/skeleton:local
+    command: ["gate-stub"]
+    environment:
+      AUDITTRAIL_DEV: "1"
+      GATE_LOG_DIR: /log
+      GATE_KEYRING: /keyring/keyring.json
+      GATE_LOG_ID: skeleton
+      GATE_PORT: "8080"
+    volumes:
+      - log:/log
+      - keyring:/keyring
+    healthcheck:
+      test: ["CMD", "python", "-c", "import http.client, sys; c = http.client.HTTPConnection('127.0.0.1', 8080, timeout=2); c.request('GET', '/health'); sys.exit(0 if c.getresponse().status == 200 else 1)"]
+      interval: 1s
+      timeout: 2s
+      retries: 30
+
+  consumer-stub:
+    image: ai-audit-trail/skeleton:local
+    command: ["consumer-stub"]
+    environment:
+      GATE_HOST: gate-stub
+      GATE_PORT: "8080"
+      CONSUMER_KEYRING: /keyring/keyring.json
+      CONSUMER_APP: skeleton-app
+      CONSUMER_LOG_ID: skeleton
+    volumes:
+      - keyring:/keyring:ro
+    depends_on:
+      gate-stub:
+        condition: service_healthy
+
+  verifier:
+    image: ai-audit-trail/skeleton:local
+    command: ["sh", "/app/deploy/skeleton-verify.sh"]
+    volumes:
+      - log:/log:ro
+      - keyring:/keyring:ro
+    depends_on:
+      gate-stub:
+        condition: service_healthy
+
+volumes:
+  log: {}
+  keyring: {}
