@@ -71,6 +71,7 @@ func (g *generator) byteNegatives() []vector {
 func (g *generator) signedNegatives() []vector {
 	fiveDeep := []any{[]any{[]any{[]any{[]any{int64(0)}}}}}
 	return []vector{
+		g.genesisVariant("float-0.5", checkRoundTrip, func(f map[string]any) { f["mono"] = 0.5 }),
 		g.genesisVariant("int-2-pow-53", checkSchema, func(f map[string]any) { f["mono"] = int64(1) << 53 }),
 		g.genesisVariant("extra-field", checkSchema, func(f map[string]any) { f["note"] = "x" }),
 		g.genesisVariant("missing-field", checkSchema, func(f map[string]any) { delete(f, "canary") }),
@@ -81,6 +82,7 @@ func (g *generator) signedNegatives() []vector {
 		g.unknownReason(),
 		g.zeroPrevAtSeq3(),
 		g.wrongDomain(),
+		g.wrongDomainAnchorReceipt(),
 		g.retiredKid(),
 	}
 }
@@ -144,6 +146,16 @@ func (g *generator) wrongDomain() vector {
 	c.boot()
 	c.commit(c.next("decision", decisionFields(true)), g.keys[kidGate1].priv, domainAnchor)
 	return negative("wrong-domain", checkSig, jsonl(c.lines))
+}
+
+// wrongDomainAnchorReceipt is genesis then a decision signed under the sink's
+// anchor-receipt domain: the same key and bytes as a valid decision, so only
+// the domain can be what check 5 refuses (issue #21).
+func (g *generator) wrongDomainAnchorReceipt() vector {
+	c := g.newChain()
+	c.boot()
+	c.commit(c.next("decision", decisionFields(true)), g.keys[kidGate1].priv, domainAnchorReceipt)
+	return negative("wrong-domain-anchor-receipt", checkSig, jsonl(c.lines))
 }
 
 // retiredKid is the rotation chain plus a record signed by gate-test-1 after

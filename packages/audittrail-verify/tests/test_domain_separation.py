@@ -1,8 +1,10 @@
 """I11 at the verifier: an anchor-domain signature never passes check 5 as a record signature.
 
-Every input is a committed file under `spec/`, or a copy of one with `sig` replaced, in a
-temporary directory. The anchor domain is spelled here from SPEC §3.3 because the verifier
-has no reason to know it; nothing is imported from `audittrail`.
+Every input is a committed file under `spec/`, or a copy of one with `sig` replaced by another
+committed file's `sig`, in a temporary directory. Nothing here signs: a line signed under the
+wrong domain is a vector from `tools/vectors-go` (CLAUDE.md rule 4; issue #21). The other
+domains are spelled here from SPEC §3.3 because the verifier has no reason to know them;
+nothing is imported from `audittrail`.
 """
 
 from __future__ import annotations
@@ -18,7 +20,6 @@ from audittrail_verify.checks import DOMAIN_RECORD, _signature_problem
 from audittrail_verify.cli import main
 from audittrail_verify.keyring import Keyring, load_keyring
 from cryptography.exceptions import InvalidSignature
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 SPEC = Path(__file__).resolve().parents[3] / "spec"
 VECTORS = SPEC / "vectors"
@@ -27,15 +28,6 @@ ANCHOR_DOMAIN = b"ai-audit-trail/v1/anchor\x00"
 """SPEC §3.3, anchor submissions."""
 RECEIPT_DOMAIN = b"ai-audit-trail/v1/anchor-receipt\x00"
 """SPEC §3.3, sink receipts."""
-
-
-def published_key(kid: str) -> Ed25519PrivateKey:
-    """The published test key for `kid`, from `spec/test-seed.txt`. Generates nothing."""
-    for raw in (SPEC / "test-seed.txt").read_text(encoding="ascii").splitlines():
-        fields = raw.split()
-        if fields and not fields[0].startswith("#") and fields[1] == kid:
-            return Ed25519PrivateKey.from_private_bytes(bytes.fromhex(fields[0]))
-    raise KeyError(kid)
 
 
 def submission() -> dict[str, Any]:
@@ -114,31 +106,35 @@ def test_anchor_submission_signature_on_a_record_line_fails_check_5(
     assert report["failures"][0]["message"] == "signature does not verify"
 
 
-def test_the_wrong_domain_vector_is_signed_under_the_anchor_domain_and_fails_check_5(
-    shared: Keyring, capsys: pytest.CaptureFixture[str]
-) -> None:
-    """The negative vector is what its name says, and check 5 is where it fails."""
-    _, crossed = (parse_canonical(line) for line in lines_of("negative/wrong-domain"))
-    signature, body = signed_bytes(crossed)
-    shared.keys[crossed["kid"]].pub.verify(signature, ANCHOR_DOMAIN + body)
-    assert _signature_problem(crossed, shared) == "signature does not verify"
-    files = sorted((VECTORS / "negative" / "wrong-domain").glob("*.jsonl"))
-    report = run(files, capsys)
-    assert report["exit"] == 2 and report["first_failing_check"] == 5
-
-
 @pytest.mark.parametrize(
-    "domain", [ANCHOR_DOMAIN, RECEIPT_DOMAIN], ids=["anchor", "anchor-receipt"]
+    ("name", "domain"),
+    [
+        ("negative/wrong-domain", ANCHOR_DOMAIN),
+        ("negative/wrong-domain-anchor-receipt", RECEIPT_DOMAIN),
+    ],
+    ids=["anchor", "anchor-receipt"],
 )
 def test_a_record_body_signed_under_another_domain_fails_check_5(
-    shared: Keyring, domain: bytes
+    shared: Keyring, name: str, domain: bytes, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """Same key, same bytes: the record domain reproduces the vector's sig; the others fail."""
-    _, decision = (parse_canonical(line) for line in lines_of("positive/decision-approve"))
-    _, body = signed_bytes(decision)
-    key = published_key(decision["kid"])
-    resign = base64.b64encode(key.sign(DOMAIN_RECORD + body)).decode("ascii")
-    assert "ed25519:" + resign == decision["sig"]
-    crossed = base64.b64encode(key.sign(domain + body)).decode("ascii")
-    bad = {**decision, "sig": "ed25519:" + crossed}
-    assert _signature_problem(bad, shared) == "signature does not verify"
+    """Same key, same bytes as the approve vector's decision; only the domain differs.
+
+    The wrong-domain vector's decision is byte for byte the body of the decision in
+    `positive/decision-approve`, signed by the same `kid`: its signature verifies under the
+    domain its name says and under no other, and check 5 is where the verifier refuses it.
+    """
+    _, approved = (parse_canonical(line) for line in lines_of("positive/decision-approve"))
+    _, crossed = (parse_canonical(line) for line in lines_of(name))
+    assert {k: v for k, v in crossed.items() if k != "sig"} == {
+        k: v for k, v in approved.items() if k != "sig"
+    }
+    assert crossed["sig"] != approved["sig"]
+    signature, body = signed_bytes(crossed)
+    pub = shared.keys[crossed["kid"]].pub
+    pub.verify(signature, domain + body)
+    with pytest.raises(InvalidSignature):
+        pub.verify(signature, DOMAIN_RECORD + body)
+    assert _signature_problem(crossed, shared) == "signature does not verify"
+    report = run(sorted((VECTORS / name).glob("*.jsonl")), capsys)
+    assert report["exit"] == 2 and report["first_failing_check"] == 5
+    assert report["failures"][0]["line"] == 2
