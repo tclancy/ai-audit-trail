@@ -130,9 +130,13 @@ def write_dev_keyring(path: Path, kid: str, seed: bytes, log_id: str) -> None:
 def open_gate(directory: Path, keyring_path: Path, log_id: str) -> Gate:
     """Draw a dev seed, open the log (writing its boot record), write the keyring, return the gate.
 
-    Refuses outside `AUDITTRAIL_DEV=1` because `SoftwareSigner` does. Keeps no copy of the seed
-    and writes no keyring for a log that did not boot.
+    Refuses outside `AUDITTRAIL_DEV=1` because `SoftwareSigner` does. Refuses a directory that
+    already holds a log for `log_id`: a per-boot key can only sign a log it started, and a
+    second boot would leave lines no keyring verifies. Keeps no copy of the seed and writes
+    no keyring for a log that did not boot.
     """
+    if any(Path(directory).glob(f"{log_id}.*.jsonl")):
+        raise LogUnavailable(f"a log for {log_id} exists; a dev gate boots from genesis only")
     seed = os.urandom(32)
     signer = SoftwareSigner(KID, seed)
     log = Log(

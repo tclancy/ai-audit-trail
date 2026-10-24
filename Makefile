@@ -80,13 +80,15 @@ vectors-test:
 # M1 walking skeleton: build the image, bring the gate up and wait for its health check,
 # run the consumer's scenario once, then the verifier over the log; the verifier's verdict
 # is the exit code. Volumes are removed afterwards so every run starts from genesis with a
-# freshly drawn dev key (a second boot under a new key would fail check 5 by design).
+# freshly drawn dev key. `run --no-deps`: without it compose recreates the (already healthy)
+# gate for the dependency, which boots a second gate under a second key and the first
+# boot line no longer verifies against the keyring on the volume.
 COMPOSE = docker compose -f deploy/compose.yml
 skeleton:
 	$(COMPOSE) down --volumes --remove-orphans
 	$(COMPOSE) up --build --detach --wait gate-stub \
-	  && $(COMPOSE) run --rm consumer-stub \
-	  && $(COMPOSE) run --rm verifier; rc=$$?; \
+	  && $(COMPOSE) run --rm --no-deps consumer-stub \
+	  && $(COMPOSE) run --rm --no-deps verifier; rc=$$?; \
 	  $(COMPOSE) down --volumes; exit $$rc
 
 demo:       # M5

@@ -218,6 +218,20 @@ def test_the_gate_writes_the_keyring_and_nothing_else_beside_it(gate: Gate, tmp_
     ]
 
 
+def test_a_second_gate_on_the_same_log_is_refused_and_leaves_the_keyring_alone(
+    gate: Gate, tmp_path: Path
+) -> None:
+    """A per-boot key cannot adopt an existing log: the second boot is refused before it draws
+    a key, the first keyring still verifies the first receipt, and the log did not grow."""
+    receipt = Record.from_line(gate.decide(cart("acct-1", 100)))
+    before = (tmp_path / "keyring.json").read_bytes()
+    with pytest.raises(LogUnavailable, match="genesis only"):
+        open_gate(tmp_path / "log", tmp_path / "keyring.json", "skeleton")
+    assert (tmp_path / "keyring.json").read_bytes() == before
+    Keyring.load(tmp_path / "keyring.json").check_record_signature(receipt)
+    assert log_lines(tmp_path) == 2
+
+
 def test_no_keyring_is_written_for_a_log_that_did_not_boot(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
