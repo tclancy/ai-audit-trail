@@ -1,0 +1,17 @@
+# The image takes pyproject.toml, uv.lock, packages/, apps/ and deploy/skeleton-verify.sh;
+# nothing below is needed to install the workspace and some of it is large or local-only.
+.git
+.venv
+**/.venv
+**/__pycache__
+**/*.pyc
+**/.pytest_cache
+**/.mypy_cache
+**/.ruff_cache
+**/.hypothesis
+runs
+spec/vectors.regen
+spec/vectors.regen.sha256
+tools/vectors-go/vectors-go
+apps/gate-stub-go/gate-stub-go
+.denylist.local
